@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Popup</title>
+    <style>
+      /* Ensure popup width is set before React/CSS loads */
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 600px; /* Increase popup width */
+        min-height: 420px;
+        overflow: hidden;
+        box-sizing: border-box;
+      }
+    </style>
   </head>
 
   <body>
