@@ -61,7 +61,15 @@ export default class OllamaPayloadAssistant {
       clearTimeout(timeout);
 
       if (!response.ok) {
-        throw new Error(`Ollama API error: ${response.status} ${response.statusText}`);
+        // Try to capture and include the response body to make errors (like 403) actionable
+        let bodyText = '';
+        try {
+          bodyText = await response.text();
+        } catch (e) {
+          bodyText = '<no-body>'; 
+        }
+        const msg = `Ollama API error: ${response.status} ${response.statusText} ${bodyText}`;
+        throw new Error(msg);
       }
 
       const ct = response.headers.get('content-type') || '';

@@ -1,4 +1,4 @@
-# 🔒 SecTest Pro — Form Security Tester (MV3)
+#  SecTest Pro — Form Security Tester (MV3)
 
 Chrome/Brave MV3 extension for safe, repeatable form security testing. It enumerates form fields, runs OWASP-style payloads across compatible inputs, enforces guardrails (allowlist, dry-run, confirmations, rate limits), logs an immutable audit trail, and can generate payloads locally via Ollama (LLM).
 
