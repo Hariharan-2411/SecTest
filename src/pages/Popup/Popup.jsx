@@ -5,6 +5,7 @@ import OllamaPayloadAssistant from '../../utils/ollamaIntegration';
 
 const Popup = () => {
   const [elements, setElements] = useState([]);
+  const [selectedIds, setSelectedIds] = useState(new Set());
   const [loading, setLoading] = useState(false);
   const [currentUrl, setCurrentUrl] = useState('');
   const [allowlist, setAllowlist] = useState([]);
@@ -16,7 +17,9 @@ const Popup = () => {
   const [selectedVuln, setSelectedVuln] = useState(DEFAULT_VULNS[0].key);
   const [payloadSource, setPayloadSource] = useState('library'); // 'file' | 'text' | 'llm' | 'library'
   const [filePayload, setFilePayload] = useState('');
+  const [fileName, setFileName] = useState('');
   const [textPayload, setTextPayload] = useState('');
+  const [fileData, setFileData] = useState(null); // { base64, mime, name }
   const [llmPayload, setLlmPayload] = useState('');
   const [llmLoading, setLlmLoading] = useState(false);
   const [ollamaAvailable, setOllamaAvailable] = useState(false);
@@ -31,6 +34,10 @@ const Popup = () => {
   const [ollamaModel, setOllamaModel] = useState('llama3');
   const [ollamaError, setOllamaError] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState('');
+  const [activeTab, setActiveTab] = useState('Scan'); // 'Scan' | 'Payloads' | 'History' | 'Settings'
+  const [payloadHistory, setPayloadHistory] = useState([]);
+  // Capture extension id for origin guidance
+  const extensionId = chrome?.runtime?.id || '<extension-id>'; // used in 403 guidance/help text
 
   useEffect(() => {
     // Load settings from storage
@@ -38,6 +45,7 @@ const Popup = () => {
   setAllowlist(result.allowlist || ['*']);
       setDryRunMode(result.dryRunMode !== undefined ? result.dryRunMode : true);
       setAuditLog(result.auditLog || []);
+      setPayloadHistory(result.payloadHistory || []);
     });
 
     // Get current tab URL
@@ -91,6 +99,27 @@ const Popup = () => {
     const newLog = [logEntry, ...auditLog].slice(0, 100); // Keep last 100 entries
     setAuditLog(newLog);
     chrome.storage.local.set({ auditLog: newLog });
+  };
+
+  const toggleSelection = (uniqueId) => {
+    setSelectedIds(prev => {
+      const copy = new Set(prev);
+      if (copy.has(uniqueId)) copy.delete(uniqueId);
+      else copy.add(uniqueId);
+      return copy;
+    });
+  };
+
+  const selectAll = () => {
+    setSelectedIds(new Set(elements.map(e => e.uniqueId)));
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+  };
+
+  const selectFilesOnly = () => {
+    setSelectedIds(new Set(elements.filter(e => e.type === 'file').map(e => e.uniqueId)));
   };
 
   const scanPage = async () => {
@@ -167,13 +196,40 @@ const Popup = () => {
     reader.onerror = reject;
     reader.readAsText(file);
   });
+  
+  const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const arrayBuffer = reader.result;
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        const b64 = btoa(binary);
+        resolve({ base64: b64, mime: file.type || 'application/octet-stream', name: file.name || 'upload.bin', arrayBuffer });
+      } catch (e) {
+        reject(e);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
 
   const onFileChange = async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     try {
-      const text = await readFileAsText(file);
-      setFilePayload(String(text));
+      setFileName(file.name || '');
+      // read binary/base64 for file attachment
+      const b = await readFileAsBase64(file);
+      setFileData({ base64: b.base64, mime: b.mime, name: b.name });
+      // also attempt to decode text payload for convenience
+      try {
+        const text = new TextDecoder('utf-8').decode(new Uint8Array(b.arrayBuffer));
+        setFilePayload(String(text));
+      } catch (_) {
+        setFilePayload('');
+      }
       setPayloadSource('file');
     } catch (err) {
       alert('Failed to read file');
@@ -224,25 +280,72 @@ const Popup = () => {
         alert('Content script not available on this page. Try reloading the page.');
         return;
       }
-      chrome.tabs.sendMessage(
-        tab.id,
-        {
-          action: 'executeVulnTest',
-          vulnKey: vuln.key,
-          payloads,
-          uniqueIds: elements.map(e => e.uniqueId),
-        },
-        (response) => {
-          if (response && response.success) {
-            const successCount = response.results.filter(r => r.success).length;
-            alert(`✅ ${vuln.label} test applied to ${successCount}/${response.results.length} fields`);
-            addToAuditLog('VULN_TEST', { vuln: vuln.key, results: response.results }, 'SUCCESS');
-          } else {
-            alert('❌ Failed to execute test');
-            addToAuditLog('VULN_TEST', { vuln: vuln.key }, 'FAILED');
+      // send only selected uniqueIds (if any); otherwise target all elements
+      const targetIds = (selectedIds && selectedIds.size > 0)
+        ? Array.from(selectedIds)
+        : elements.map(e => e.uniqueId);
+      if (payloadSource === 'file' && fileData) {
+        // Attach file(s) to file inputs on page
+        chrome.tabs.sendMessage(
+          tab.id,
+          {
+            action: 'attachFile',
+            fileData,
+            uniqueIds: targetIds,
+          },
+          (response) => {
+            if (response && response.success) {
+              const successCount = response.results.filter(r => r.success).length;
+              alert(`✅ File attached to ${successCount}/${response.results.length} fields`);
+              addToAuditLog('ATTACH_FILE', { file: fileData.name, results: response.results }, 'SUCCESS');
+              try {
+                savePayloadHistory({
+                  timestamp: new Date().toISOString(),
+                  vuln: vuln.key,
+                  payloadSource,
+                  payloads: [fileData.name],
+                  targets: targetIds,
+                });
+              } catch (e) { console.warn('Could not save payload history', e); }
+            } else {
+              alert('❌ Failed to attach file');
+              addToAuditLog('ATTACH_FILE', { file: fileData.name }, 'FAILED');
+            }
           }
-        }
-      );
+        );
+      } else {
+        chrome.tabs.sendMessage(
+          tab.id,
+          {
+            action: 'executeVulnTest',
+            vulnKey: vuln.key,
+            payloads,
+            uniqueIds: targetIds,
+          },
+          (response) => {
+            if (response && response.success) {
+              const successCount = response.results.filter(r => r.success).length;
+              alert(`✅ ${vuln.label} test applied to ${successCount}/${response.results.length} fields`);
+              addToAuditLog('VULN_TEST', { vuln: vuln.key, results: response.results }, 'SUCCESS');
+              // Save to payload history for later reuse
+              try {
+                savePayloadHistory({
+                  timestamp: new Date().toISOString(),
+                  vuln: vuln.key,
+                  payloadSource,
+                  payloads,
+                  targets: targetIds,
+                });
+              } catch (e) {
+                console.warn('Could not save payload history', e);
+              }
+            } else {
+              alert('❌ Failed to execute test');
+              addToAuditLog('VULN_TEST', { vuln: vuln.key }, 'FAILED');
+            }
+          }
+        );
+      }
     };
 
     confirmAndExecute(`${vuln.label} Test`, { name: vuln.key, type: 'vuln' }, executeAction);
@@ -289,6 +392,38 @@ const Popup = () => {
     }
   };
 
+  // Persist a payload history entry (most recent first, capped)
+  const savePayloadHistory = (entry) => {
+    setPayloadHistory(prev => {
+      const next = [entry, ...prev].slice(0, 50);
+      try { chrome.storage.local.set({ payloadHistory: next }); } catch (e) { /* ignore */ }
+      return next;
+    });
+  };
+
+  const insertHistoryEntry = (entry) => {
+    if (!entry || !entry.payloads) return;
+    // populate the Payloads tab with the saved payloads (text mode)
+    setPayloadSource('text');
+    setTextPayload(entry.payloads.join('\n'));
+    setActiveTab('Payloads');
+  };
+
+  const copyHistoryEntry = async (entry) => {
+    if (!entry || !entry.payloads) return;
+    const text = entry.payloads.join('\n');
+    try { await navigator.clipboard.writeText(text); } catch (e) { alert('Copy failed'); }
+  };
+
+  const deleteHistoryEntry = (index) => {
+    setPayloadHistory(prev => {
+      const copy = [...prev];
+      copy.splice(index, 1);
+      try { chrome.storage.local.set({ payloadHistory: copy }); } catch (e) { /* ignore */ }
+      return copy;
+    });
+  };
+
   return (
     <div className="sectest-container">
       <div className="header">
@@ -304,28 +439,79 @@ const Popup = () => {
         </div>
       )}
 
-      <div className="controls">
-        <button onClick={scanPage} disabled={loading} className="btn-primary">
-          {loading ? '⏳ Scanning...' : '🔍 Scan Page'}
-        </button>
-        <button onClick={() => setShowSettings(!showSettings)} className="btn-secondary">
-          ⚙️ Settings
-        </button>
-        <div className="vuln-runner">
-          <select value={selectedVuln} onChange={(e) => setSelectedVuln(e.target.value)}>
-            {DEFAULT_VULNS.map((v) => (
-              <option key={v.key} value={v.key}>{v.label}</option>
-            ))}
-          </select>
-          <button onClick={runVulnTest} className="btn-secondary" disabled={!isHostAllowed(currentUrl)}>
-            🚀 Run Test
-          </button>
-        </div>
+      <div className="tab-nav">
+        <button className={"tab" + (activeTab === 'Scan' ? ' active' : '')} onClick={() => setActiveTab('Scan')}>🔍 Scan</button>
+        <button className={"tab" + (activeTab === 'Payloads' ? ' active' : '')} onClick={() => setActiveTab('Payloads')}>🧰 Payloads</button>
+        <button className={"tab" + (activeTab === 'History' ? ' active' : '')} onClick={() => setActiveTab('History')}>📜 History</button>
+        <button className={"tab" + (activeTab === 'Settings' ? ' active' : '')} onClick={() => setActiveTab('Settings')}>⚙️ Settings</button>
       </div>
 
-      <div className="payload-sources">
-        <h3>Payload Source</h3>
-        <div className="source-options">
+      {activeTab === 'Scan' && (
+        <div>
+          <div className="controls">
+            <button onClick={scanPage} disabled={loading} className="btn-primary">
+              {loading ? '⏳ Scanning...' : '🔍 Scan Page'}
+            </button>
+            <button onClick={() => setActiveTab('Settings')} className="btn-secondary">
+              ⚙️ Settings
+            </button>
+            <div className="vuln-runner">
+              <select value={selectedVuln} onChange={(e) => setSelectedVuln(e.target.value)}>
+                {DEFAULT_VULNS.map((v) => (
+                  <option key={v.key} value={v.key}>{v.label}</option>
+                ))}
+              </select>
+              <button onClick={runVulnTest} className="btn-secondary" disabled={!isHostAllowed(currentUrl)}>
+                🚀 Run Test
+              </button>
+            </div>
+          </div>
+
+          <div className="elements-list">
+            {elements.length > 0 && (
+              <div className="stats">
+                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                  <div>Found {elements.length} form elements</div>
+                  <div style={{display: 'flex', gap: 8}}>
+                    <button className="btn-small" onClick={selectAll}>Select all</button>
+                    <button className="btn-small" onClick={clearSelection}>Clear</button>
+                    <button className="btn-small" onClick={selectFilesOnly}>Select files</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {elements.map((element, idx) => (
+              <div key={idx} className="element-card">
+                <div className="element-header">
+                  <input
+                    type="checkbox"
+                    style={{marginRight: 8}}
+                    checked={selectedIds && selectedIds.has && selectedIds.has(element.uniqueId)}
+                    onChange={() => toggleSelection(element.uniqueId)}
+                    title="Select this field for payloads/attachments"
+                  />
+                  <span className="element-icon">{getElementIcon(element.type)}</span>
+                  <span className="element-type">{element.type}</span>
+                  <span className="element-name">{element.name || 'unnamed'}</span>
+                </div>
+
+                <div className="element-details">
+                  {element.subType && <div>Type: {element.subType}</div>}
+                  {element.id && <div>ID: {element.id}</div>}
+                  {element.placeholder && <div>Placeholder: {element.placeholder}</div>}
+                  {element.required && <div className="badge-required">Required</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'Payloads' && (
+        <div className="payload-sources">
+          <h3>Payload Source</h3>
+          <div className="source-options">
           <label>
             <input
               type="radio"
@@ -344,9 +530,13 @@ const Popup = () => {
               checked={payloadSource === 'file'}
               onChange={(e) => setPayloadSource(e.target.value)}
             />
-            Upload custom payload file (.txt)
+            Upload custom payload file (any type)
           </label>
-          <input type="file" accept=".txt" onChange={onFileChange} disabled={payloadSource !== 'file'} />
+          {/* accept any file type for greater flexibility */}
+          <input type="file" accept="*/*" onChange={onFileChange} disabled={payloadSource !== 'file'} />
+          {fileName && (
+            <div className="file-preview">Selected file: <code>{fileName}</code></div>
+          )}
 
           <label>
             <input
@@ -396,8 +586,38 @@ const Popup = () => {
           )}
         </div>
       </div>
+      )}
 
-      {showSettings && (
+      {activeTab === 'History' && (
+        <div className="history-panel">
+          <h3>📜 Payload History</h3>
+          {payloadHistory.length === 0 ? (
+            <div className="hint">No history yet. Run tests to save payloads here.</div>
+          ) : (
+            <div className="history-list">
+              {payloadHistory.map((h, idx) => (
+                <div key={idx} className="history-item">
+                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                    <div>
+                      <strong>{h.vuln || 'custom'}</strong>
+                      <div className="muted">{new Date(h.timestamp).toLocaleString()}</div>
+                      <div className="muted">Source: {h.payloadSource}</div>
+                    </div>
+                    <div style={{display:'flex', gap:8}}>
+                      <button className="btn-small" onClick={() => insertHistoryEntry(h)}>Insert</button>
+                      <button className="btn-small" onClick={() => copyHistoryEntry(h)}>Copy</button>
+                      <button className="btn-remove" onClick={() => deleteHistoryEntry(idx)}>Delete</button>
+                    </div>
+                  </div>
+                  <pre className="history-payload">{(h.payloads || []).slice(0,5).join('\n')}</pre>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'Settings' && (
         <div className="settings-panel">
           <h3>⚙️ Settings</h3>
           
@@ -474,8 +694,30 @@ const Popup = () => {
               <div className="llm-ok">{ollamaStatus}</div>
             )}
             {!ollamaAvailable && ollamaError && (
-              <div className="llm-error">{ollamaError}</div>
+                <div className="llm-error">
+                  {ollamaError}
+                  {ollamaError.includes('403') && (
+                    <div style={{marginTop:6, fontSize:12, lineHeight:1.4}}>
+                      <strong>403 Forbidden:</strong> Ollama rejected the extension origin.<br/>
+                      Fix A (recommended): Restart Ollama with an origin allowlist including <code>chrome-extension://{extensionId}</code><br/>
+                      <code style={{display:'block',whiteSpace:'pre-wrap',background:'#eef2ff',padding:'4px 6px',borderRadius:4,marginTop:4}}>
+  {`# Example (macOS/Linux shell):
+  export OLLAMA_ORIGINS='http://127.0.0.1 http://localhost chrome-extension://${extensionId}'
+  ollama serve`}
+                      </code>
+                      Fix B: Use the local proxy (see below) and set base URL to <code>http://127.0.0.1:5000</code>.
+                    </div>
+                  )}
+                </div>
             )}
+            {/* Proxy helper guidance */}
+            <div style={{marginTop:16}}>
+              <h4 style={{margin:'8px 0'}}>Proxy Workaround</h4>
+              <p style={{fontSize:12, margin:'4px 0 8px'}}>If you cannot modify Ollama origins, run the provided proxy (scripts/ollama-proxy.js) then set Base URL to <code>http://127.0.0.1:5000</code>. It strips the Origin header so POST /api/generate succeeds.</p>
+              {ollamaError.includes('403') && (
+                <p style={{fontSize:12, color:'#b00020'}}>403 detected – proxy workaround is available. See project scripts folder.</p>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -258,6 +258,47 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
   }
 
+  if (request.action === 'attachFile') {
+    const { fileData, uniqueIds } = request;
+    // fileData: { base64, mime, name }
+    const idsToUse = Array.isArray(uniqueIds) && uniqueIds.length ? uniqueIds : scanner.scannedElements.map(e => e.uniqueId);
+    const results = [];
+    for (const id of idsToUse) {
+      const element = scanner.findElementByUniqueId(id);
+      if (!element) {
+        results.push({ uniqueId: id, success: false, reason: 'not_found' });
+        continue;
+      }
+      if (element.type !== 'file') {
+        results.push({ uniqueId: id, success: false, reason: 'not_file_input' });
+        continue;
+      }
+      try {
+        // Decode base64 to Uint8Array
+        const b64 = fileData.base64;
+        const binaryString = atob(b64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: fileData.mime || 'application/octet-stream' });
+        const file = new File([blob], fileData.name || 'upload.bin', { type: fileData.mime || 'application/octet-stream' });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        element.files = dt.files;
+        element.style.border = '2px solid #4CAF50';
+        setTimeout(() => { element.style.border = ''; }, 2000);
+        results.push({ uniqueId: id, success: true, fileName: file.name, size: file.size });
+      } catch (err) {
+        console.error('attachFile error', err);
+        results.push({ uniqueId: id, success: false, reason: 'attach_failed' });
+      }
+    }
+    sendResponse({ success: true, results });
+    return true;
+  }
+
   // Execute a vulnerability test by injecting payloads into compatible fields
   if (request.action === 'executeVulnTest') {
     const { vulnKey, payloads, uniqueIds } = request;
