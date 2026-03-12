@@ -1,6 +1,3 @@
-console.log('SecTest Pro - Content Script Loaded');
-
-// Form element scanner
 class FormScanner {
   constructor() {
     this.scannedElements = [];
@@ -9,8 +6,7 @@ class FormScanner {
 
   scanPage() {
     this.scannedElements = [];
-    
-    // Scan all input elements
+
     const inputs = document.querySelectorAll('input');
     inputs.forEach((input, index) => {
       const elementInfo = {
@@ -28,7 +24,6 @@ class FormScanner {
       this.scannedElements.push(elementInfo);
     });
 
-    // Scan textareas
     const textareas = document.querySelectorAll('textarea');
     textareas.forEach((textarea, index) => {
       const elementInfo = {
@@ -46,7 +41,6 @@ class FormScanner {
       this.scannedElements.push(elementInfo);
     });
 
-    // Scan select elements
     const selects = document.querySelectorAll('select');
     selects.forEach((select, index) => {
       const options = Array.from(select.options).map(opt => opt.value);
@@ -65,7 +59,6 @@ class FormScanner {
       this.scannedElements.push(elementInfo);
     });
 
-    // Scan file inputs
     const fileInputs = document.querySelectorAll('input[type="file"]');
     fileInputs.forEach((fileInput, index) => {
       const elementInfo = {
@@ -83,8 +76,7 @@ class FormScanner {
       this.scannedElements.push(elementInfo);
     });
 
-    console.log(`Scanned ${this.scannedElements.length} form elements`);
-    return this.scannedElements.map(el => ({...el, element: null})); // Remove DOM reference for messaging
+    return this.scannedElements.map(el => ({...el, element: null}));
   }
 
   getXPath(element) {
@@ -94,7 +86,7 @@ class FormScanner {
     if (element === document.body) {
       return '/html/body';
     }
-    
+
     let ix = 0;
     const siblings = element.parentNode?.childNodes || [];
     for (let i = 0; i < siblings.length; i++) {
@@ -113,7 +105,6 @@ class FormScanner {
     return element ? element.element : null;
   }
 
-  // Safely set a value on a compatible element
   safeSetValue(element, value) {
     if (!element) return { success: false, reason: 'no_element' };
     const tag = element.tagName;
@@ -138,7 +129,6 @@ class FormScanner {
         element.value = value;
         return { success: true };
       }
-      // default: attempt to set on other textual types
       try {
         element.value = value;
         return { success: true };
@@ -156,10 +146,7 @@ class FormScanner {
 
 const scanner = new FormScanner();
 
-// Message listener for popup communication
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('Content script received message:', request);
-
   if (request.action === 'ping') {
     sendResponse({ ok: true });
     return true;
@@ -175,11 +162,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (element) {
       const testMarker = `[TEST_${Date.now()}]`;
       if (element.tagName === 'SELECT') {
-        // For select, we can't insert text, just log
-        console.log(`Cannot insert test marker in SELECT element: ${element.name}`);
         sendResponse({ success: false, message: 'Cannot insert marker in select elements' });
       } else if (element.type === 'file') {
-        console.log(`Cannot insert test marker in FILE input: ${element.name}`);
         sendResponse({ success: false, message: 'Cannot insert marker in file inputs' });
       } else {
         element.value = testMarker;
@@ -207,21 +191,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const element = scanner.findElementByUniqueId(request.uniqueId);
     if (element) {
       if (element.type === 'file') {
-        // Create a harmless XML file blob
         const xmlContent = '<?xml version="1.0"?>\n<test>\n  <data>Harmless test payload</data>\n</test>';
         const blob = new Blob([xmlContent], { type: 'text/xml' });
         const file = new File([blob], 'test_payload.xml', { type: 'text/xml' });
-        
-        // Create a new FileList-like object
         const dataTransfer = new DataTransfer();
         dataTransfer.items.add(file);
         element.files = dataTransfer.files;
-        
         element.style.border = '2px solid #2196F3';
         setTimeout(() => {
           element.style.border = '';
         }, 2000);
-        
         sendResponse({
           success: true,
           message: 'Attached test_payload.xml',
@@ -260,7 +239,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'attachFile') {
     const { fileData, uniqueIds } = request;
-    // fileData: { base64, mime, name }
     const idsToUse = Array.isArray(uniqueIds) && uniqueIds.length ? uniqueIds : scanner.scannedElements.map(e => e.uniqueId);
     const results = [];
     for (const id of idsToUse) {
@@ -274,7 +252,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         continue;
       }
       try {
-        // Decode base64 to Uint8Array
         const b64 = fileData.base64;
         const binaryString = atob(b64);
         const len = binaryString.length;
@@ -291,7 +268,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         setTimeout(() => { element.style.border = ''; }, 2000);
         results.push({ uniqueId: id, success: true, fileName: file.name, size: file.size });
       } catch (err) {
-        console.error('attachFile error', err);
         results.push({ uniqueId: id, success: false, reason: 'attach_failed' });
       }
     }
@@ -299,7 +275,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  // Execute a vulnerability test by injecting payloads into compatible fields
   if (request.action === 'executeVulnTest') {
     const { vulnKey, payloads, uniqueIds } = request;
     const results = [];
@@ -310,12 +285,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         results.push({ uniqueId: id, success: false, reason: 'not_found' });
         return;
       }
-      // Skip selects and file inputs for text payloads
       if (el.tagName === 'SELECT' || (el.type && el.type.toLowerCase() === 'file')) {
         results.push({ uniqueId: id, success: false, reason: 'unsupported_field' });
         return;
       }
-      // Try each payload; record the first success
       let applied = false;
       for (const p of payloads || []) {
         const r = scanner.safeSetValue(el, p);
@@ -334,5 +307,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ success: true, vulnKey, results });
   }
 
-  return true; // Keep channel open for async response
+  return true;
 });
