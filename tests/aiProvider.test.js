@@ -47,6 +47,18 @@ describe('aiProvider', () => {
     });
   });
 
+  it('chat posts mode=chat with the message history and returns the reply', async () => {
+    global.fetch.mockResolvedValue(okJson({ reply: 'That payload triggers XSS…', model: 'm' }));
+    const msgs = [{ role: 'user', content: 'explain <script>alert(1)</script>' }];
+    const reply = await ai.chat(msgs, 'llama-3.3-70b-versatile');
+
+    const [url, opts] = global.fetch.mock.calls[0];
+    expect(url).toBe('https://proj.supabase.co/functions/v1/groq-proxy');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body)).toEqual({ mode: 'chat', messages: msgs, model: 'llama-3.3-70b-versatile' });
+    expect(reply).toBe('That payload triggers XSS…');
+  });
+
   it('listModels GETs /models and returns the id array', async () => {
     global.fetch.mockResolvedValue(okJson({ models: ['llama-3.3-70b-versatile', 'gemma2-9b-it'] }));
     const ids = await ai.listModels();

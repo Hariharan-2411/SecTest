@@ -59,6 +59,16 @@ export async function generatePayload(context, model = DEFAULT_MODEL) {
   };
 }
 
+// Multi-turn chat. `messages` is an array of { role: 'user'|'assistant', content }.
+// Returns the assistant's reply text.
+export async function chat(messages, model = DEFAULT_MODEL) {
+  const data = await callEdge('', {
+    method: 'POST',
+    body: { mode: 'chat', messages, model },
+  });
+  return data.reply || '';
+}
+
 export async function listModels() {
   const data = await callEdge('/models', { method: 'GET' });
   return Array.isArray(data.models) ? data.models : [];

@@ -35,11 +35,15 @@ const Popup = () => {
   const [textPayload, setTextPayload] = useState('');
   const [fileData, setFileData] = useState(null); // { base64, mime, name }
   const [llmPayload, setLlmPayload] = useState('');
+  const [llmExplanation, setLlmExplanation] = useState('');
   const [llmLoading, setLlmLoading] = useState(false);
   const [aiModel, setAiModel] = useState(DEFAULT_MODEL); // selected Groq model id
   const [aiModels, setAiModels] = useState(() => decorate()); // decorated list
   const [aiReachable, setAiReachable] = useState(null); // null=checking, bool=result
   const [aiError, setAiError] = useState('');
+  const [chatMessages, setChatMessages] = useState([]); // {role:'user'|'assistant', content}
+  const [chatInput, setChatInput] = useState('');
+  const [chatBusy, setChatBusy] = useState(false);
   const [activeTab, setActiveTab] = useState('Scan'); // 'Scan' | 'Payloads' | 'Recon' | 'History' | 'Settings'
   const [payloadHistory, setPayloadHistory] = useState([]);
   const [recon, setRecon] = useState(null); // passive page recon snapshot
@@ -446,6 +450,7 @@ const Popup = () => {
         vulnerability: vuln?.label || selectedVuln,
       }, aiModel);
       setLlmPayload(suggestion.payload || '');
+      setLlmExplanation(suggestion.explanation || '');
       setPayloadSource('llm');
       setAiReachable(true);
       toast.success('Payload generated');
@@ -455,6 +460,26 @@ const Popup = () => {
       setAiError(msg);
     } finally {
       setLlmLoading(false);
+    }
+  };
+
+  const sendChat = async (text) => {
+    const content = (text != null ? text : chatInput).trim();
+    if (!content || chatBusy) return;
+    const next = [...chatMessages, { role: 'user', content }];
+    setChatMessages(next);
+    setChatInput('');
+    setChatBusy(true);
+    try {
+      const reply = await ai.chat(next, aiModel);
+      setChatMessages([...next, { role: 'assistant', content: reply }]);
+      setAiReachable(true);
+    } catch (e) {
+      const msg = (e && e.message) || 'AI chat failed.';
+      toast.error(msg);
+      setChatMessages([...next, { role: 'assistant', content: `⚠️ ${msg}` }]);
+    } finally {
+      setChatBusy(false);
     }
   };
 
@@ -751,6 +776,9 @@ const Popup = () => {
         <button className={"tab" + (activeTab === 'Recon' ? ' active' : '')} onClick={() => setActiveTab('Recon')} aria-label="Recon">
           <IconRecon />Recon
         </button>
+        <button className={"tab" + (activeTab === 'AI' ? ' active' : '')} onClick={() => setActiveTab('AI')} aria-label="AI">
+          🤖 AI
+        </button>
         <button className={"tab" + (activeTab === 'History' ? ' active' : '')} onClick={() => setActiveTab('History')} aria-label="History">
           <IconHistory />History
         </button>
@@ -907,6 +935,11 @@ const Popup = () => {
                 readOnly
               />
             </div>
+            {llmExplanation && (
+              <div className="llm-explanation">
+                <strong>Why:</strong> {llmExplanation}
+              </div>
+            )}
             {aiReachable === false && (
               <div className="llm-hint">
                 AI proxy not reachable. Check that the Edge Function is deployed and you're logged in.
@@ -998,6 +1031,67 @@ const Popup = () => {
                 )}
               </div>
             </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'AI' && (
+        <div className="ai-chat-panel">
+          <div className="ai-chat-head">
+            <h3>🤖 AI Assistant</h3>
+            <button
+              className="link-btn"
+              onClick={() => setChatMessages([])}
+              disabled={chatBusy || chatMessages.length === 0}
+            >
+              Clear
+            </button>
+          </div>
+          <p className="ai-chat-sub">
+            Paste a payload to get it explained, critiqued, and improved — or ask anything about testing this page.
+          </p>
+
+          <div className="ai-chat-log">
+            {chatMessages.length === 0 && (
+              <div className="ai-chat-empty">
+                <p>Try:</p>
+                <button className="ai-chip" onClick={() => sendChat("Explain this payload and suggest a stronger one: <script>alert(1)</script>")}>
+                  Analyze a sample XSS payload
+                </button>
+                <button className="ai-chip" onClick={() => sendChat("Give me an effective SQL injection payload for a login form and explain it.")}>
+                  Suggest a SQLi payload
+                </button>
+              </div>
+            )}
+            {chatMessages.map((m, i) => (
+              <div key={i} className={`ai-msg ai-msg-${m.role}`}>
+                <div className="ai-msg-role">{m.role === 'user' ? 'You' : 'AI'}</div>
+                <div className="ai-msg-body">{m.content}</div>
+              </div>
+            ))}
+            {chatBusy && <div className="ai-msg ai-msg-assistant"><div className="ai-msg-role">AI</div><div className="ai-msg-body">⏳ Thinking…</div></div>}
+          </div>
+
+          <div className="ai-chat-input">
+            <textarea
+              rows={3}
+              placeholder="Paste a payload or ask a question…  (Enter to send, Shift+Enter for newline)"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  sendChat();
+                }
+              }}
+              disabled={chatBusy}
+            />
+            <button className="btn-primary" onClick={() => sendChat()} disabled={chatBusy || !chatInput.trim()}>
+              {chatBusy ? '…' : 'Send'}
+            </button>
+          </div>
+          {aiReachable === false && (
+            <div className="llm-hint">AI proxy not reachable. Check that the Edge Function is deployed and you're logged in.</div>
           )}
         </div>
       )}

@@ -51,6 +51,32 @@ export default function Login({ onAuthed }) {
 
   const configured = isConfigured();
 
+  // Persist a pending verify/reset (email + mode) so opening the page in a new
+  // tab resumes the code-entry step instead of starting over at login.
+  const savePending = (m, mail) => {
+    try {
+      chrome.storage.local.set({ authPending: { mode: m, email: mail } });
+    } catch (_) {}
+  };
+  const clearPending = () => {
+    try {
+      chrome.storage.local.remove(['authPending']);
+    } catch (_) {}
+  };
+
+  // On mount, resume any pending verify/reset.
+  useEffect(() => {
+    try {
+      chrome.storage.local.get(['authPending'], (res) => {
+        const p = res && res.authPending;
+        if (p && (p.mode === 'verify' || p.mode === 'reset')) {
+          setMode(p.mode);
+          if (p.email) setEmail(p.email);
+        }
+      });
+    } catch (_) {}
+  }, []);
+
   // Resend cooldown ticker.
   useEffect(() => {
     if (cooldown <= 0) return undefined;
@@ -76,6 +102,7 @@ export default function Login({ onAuthed }) {
 
   const goLogin = () => run(async () => {
     await auth.signIn(email, password);
+    clearPending();
     onAuthed && onAuthed();
   });
 
@@ -84,12 +111,14 @@ export default function Login({ onAuthed }) {
     toast.success('Account created — check your email for a verification code.');
     setCode('');
     setCooldown(COOLDOWN_SECONDS);
+    savePending('verify', email);
     setMode('verify');
   });
 
   const goVerify = () => run(async () => {
     await auth.verifyOtp(email, code.trim());
     toast.success('Email verified!');
+    clearPending();
     onAuthed && onAuthed();
   });
 
@@ -99,12 +128,14 @@ export default function Login({ onAuthed }) {
     setCode('');
     setNewPassword('');
     setCooldown(COOLDOWN_SECONDS);
+    savePending('reset', email);
     setMode('reset');
   });
 
   const goReset = () => run(async () => {
     await auth.confirmPasswordReset(email, code.trim(), newPassword);
     toast.success('Password updated!');
+    clearPending();
     onAuthed && onAuthed();
   });
 
@@ -117,6 +148,26 @@ export default function Login({ onAuthed }) {
   const onSubmit = (fn) => (e) => {
     e.preventDefault();
     fn();
+  };
+
+  // The popup closes when it loses focus, so you can't switch to your email tab
+  // to copy the code. Opening the same page as a real tab keeps it open.
+  const inTab =
+    typeof window !== 'undefined' &&
+    window.location &&
+    new URLSearchParams(window.location.search).get('view') === 'tab';
+
+  const openInTab = () => {
+    try {
+      chrome.tabs.create({ url: chrome.runtime.getURL('popup.html?view=tab') });
+    } catch (_) {}
+  };
+
+  const needsCode = mode === 'verify' || mode === 'reset';
+
+  const backToLogin = () => {
+    clearPending();
+    setMode('login');
   };
 
   const togglePw = () => setShowPw((s) => !s);
@@ -140,6 +191,13 @@ export default function Login({ onAuthed }) {
         </div>
       )}
 
+      {!inTab && needsCode && (
+        <div className="auth-tab-hint">
+          The popup closes when you switch tabs. To copy your code from email,
+          {' '}<button type="button" className="link-btn" onClick={openInTab}>open this in a tab ↗</button>.
+        </div>
+      )}
+
       {mode === 'login' && (
         <form className="auth-form" onSubmit={onSubmit(goLogin)}>
           <h3>Sign in</h3>
@@ -160,7 +218,7 @@ export default function Login({ onAuthed }) {
           <PasswordInput value={password} onChange={setPassword} placeholder="Password (min 6 chars)" autoComplete="new-password" show={showPw} onToggle={togglePw} />
           <button type="submit" className="btn-primary" disabled={busy}>{busy ? '…' : 'Sign up'}</button>
           <div className="auth-links">
-            <button type="button" className="link-btn" onClick={() => setMode('login')}>Back to sign in</button>
+            <button type="button" className="link-btn" onClick={backToLogin}>Back to sign in</button>
           </div>
         </form>
       )}
@@ -173,7 +231,7 @@ export default function Login({ onAuthed }) {
           <button type="submit" className="btn-primary" disabled={busy}>{busy ? '…' : 'Verify'}</button>
           <div className="auth-links">
             {resendButton('signup')}
-            <button type="button" className="link-btn" onClick={() => setMode('login')}>Back to sign in</button>
+            <button type="button" className="link-btn" onClick={backToLogin}>Back to sign in</button>
           </div>
         </form>
       )}
@@ -185,7 +243,7 @@ export default function Login({ onAuthed }) {
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" autoComplete="username" required />
           <button type="submit" className="btn-primary" disabled={busy}>{busy ? '…' : 'Send code'}</button>
           <div className="auth-links">
-            <button type="button" className="link-btn" onClick={() => setMode('login')}>Back to sign in</button>
+            <button type="button" className="link-btn" onClick={backToLogin}>Back to sign in</button>
           </div>
         </form>
       )}
@@ -199,7 +257,7 @@ export default function Login({ onAuthed }) {
           <button type="submit" className="btn-primary" disabled={busy}>{busy ? '…' : 'Update password'}</button>
           <div className="auth-links">
             {resendButton('recovery')}
-            <button type="button" className="link-btn" onClick={() => setMode('login')}>Back to sign in</button>
+            <button type="button" className="link-btn" onClick={backToLogin}>Back to sign in</button>
           </div>
         </form>
       )}
