@@ -9,10 +9,36 @@ import Login from './Login';
 import AccountMenu from './AccountMenu';
 import * as auth from '../../utils/auth';
 
+const IconMoon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+  </svg>
+);
+const IconSun = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+    <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+  </svg>
+);
+const IconMonitor = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+  </svg>
+);
+const IconAI = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/>
+    <circle cx="9" cy="14" r="1" fill="currentColor" stroke="none"/>
+    <circle cx="15" cy="14" r="1" fill="currentColor" stroke="none"/>
+  </svg>
+);
+
 const THEME_META = {
-  dark: { icon: '🌙', label: 'Dark' },
-  light: { icon: '☀️', label: 'Light' },
-  system: { icon: '🖥️', label: 'System' },
+  dark:   { icon: <IconMoon />,    label: 'Dark' },
+  light:  { icon: <IconSun />,     label: 'Light' },
+  system: { icon: <IconMonitor />, label: 'System' },
 };
 
 const Popup = () => {
@@ -777,7 +803,7 @@ const Popup = () => {
           <IconRecon />Recon
         </button>
         <button className={"tab" + (activeTab === 'AI' ? ' active' : '')} onClick={() => setActiveTab('AI')} aria-label="AI">
-          🤖 AI
+          <IconAI />AI
         </button>
         <button className={"tab" + (activeTab === 'History' ? ' active' : '')} onClick={() => setActiveTab('History')} aria-label="History">
           <IconHistory />History
@@ -952,7 +978,7 @@ const Popup = () => {
 
       {activeTab === 'Recon' && (
         <div className="recon-panel">
-          <h3>🛰️ Page Recon</h3>
+          <h3>Page Recon</h3>
           <div className="controls">
             <button onClick={runRecon} disabled={reconLoading} className="btn-primary">
               {reconLoading ? 'Reading...' : 'Run Passive Recon'}
@@ -1038,7 +1064,7 @@ const Popup = () => {
       {activeTab === 'AI' && (
         <div className="ai-chat-panel">
           <div className="ai-chat-head">
-            <h3>🤖 AI Assistant</h3>
+            <h3><IconAI />AI Assistant</h3>
             <button
               className="link-btn"
               onClick={() => setChatMessages([])}
