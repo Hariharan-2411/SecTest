@@ -369,6 +369,24 @@
                 <div class="form-result" id="search-result">Search completed!</div>
             </form>
         </div>
+
+        <!-- Advanced extraction targets (shadow DOM, iframe, recon params) -->
+        <div class="form-section">
+            <h2>🧬 Advanced Extraction Targets</h2>
+
+            <!-- Open redirect + IDOR candidate params -->
+            <form id="redirect-form" action="/account/transfer" method="post">
+                <input type="text" id="next" name="next" placeholder="redirect target (open redirect candidate)">
+                <input type="text" id="account_id" name="account_id" placeholder="account id (IDOR candidate)">
+                <button type="submit">Continue</button>
+            </form>
+
+            <!-- Shadow DOM host: fields inside should still be scanned -->
+            <div id="shadow-host"></div>
+
+            <!-- Same-origin iframe with its own form -->
+            <iframe id="inner-frame" title="inner" style="width:100%;height:120px;border:1px solid #ccc"></iframe>
+        </div>
     </div>
 
     <script>
@@ -387,6 +405,34 @@
                 console.log(`Form submitted: ${this.id}`);
             });
         });
+
+        // --- Advanced extraction fixtures ---
+        // Attach an OPEN shadow root with a form field inside it.
+        (function () {
+            const host = document.getElementById('shadow-host');
+            if (host && host.attachShadow) {
+                const root = host.attachShadow({ mode: 'open' });
+                root.innerHTML =
+                    '<label>Shadow secret '
+                    + '<input type="text" name="shadow_secret" placeholder="inside shadow DOM"></label>'
+                    + '<input type="hidden" name="csrf_token" value="shadow-csrf-123">';
+            }
+        })();
+
+        // Populate the same-origin iframe with a form.
+        (function () {
+            const frame = document.getElementById('inner-frame');
+            if (frame && frame.contentDocument) {
+                frame.contentDocument.body.innerHTML =
+                    '<form action="/iframe/login" method="post">'
+                    + '<input type="text" name="iframe_user" placeholder="iframe user">'
+                    + '<input type="password" name="iframe_pass"></form>';
+            }
+        })();
+
+        // Inline endpoint references (exercise passive recon endpoint discovery).
+        const __apiBase = '/api/v1/profile';
+        function __loadProfile() { return fetch('/api/v1/profile/settings'); }
 
         // Log for testing
         console.log('🔒 SecTest Pro Test Page Loaded');

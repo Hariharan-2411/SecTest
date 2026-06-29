@@ -4,9 +4,9 @@
 export default class OllamaPayloadAssistant {
   constructor(baseUrl = 'http://127.0.0.1:11434') {
     this.baseUrl = baseUrl;
-    this.model = 'llama3'; // Default model; change to 'mistral' or any installed tag
+    this.model = 'llama3.2:1b'; // Default model; lightweight version for VMs with limited resources
     this.isAvailable = false;
-  this.lastErrorMessage = '';
+    this.lastErrorMessage = '';
     this.checkAvailability();
   }
 
@@ -38,7 +38,7 @@ export default class OllamaPayloadAssistant {
     }
 
     const prompt = this.buildPrompt(context);
-    
+
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 20000);
@@ -66,7 +66,7 @@ export default class OllamaPayloadAssistant {
         try {
           bodyText = await response.text();
         } catch (e) {
-          bodyText = '<no-body>'; 
+          bodyText = '<no-body>';
         }
         const msg = `Ollama API error: ${response.status} ${response.statusText} ${bodyText}`;
         throw new Error(msg);
