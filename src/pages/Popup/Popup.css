@@ -53,6 +53,45 @@
   --transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* ── Light theme overrides ──────────────────────────────────
+   Only color tokens change; fonts/radii/transition inherit from :root.
+   Neon accents are darkened so they stay readable on light surfaces. */
+:root[data-theme="light"] {
+  --bg:              #F4F6FB;
+  --card:            #FFFFFF;
+  --card-hover:      #EEF1F8;
+  --muted:           #E8ECF5;
+  --surface:         #FAFBFE;
+
+  --fg:              #1A2238;
+  --fg-dim:          #5A6688;
+  --fg-muted:        #95A0BC;
+
+  --accent:          #00A35C;
+  --accent-dim:      rgba(0, 163, 92, 0.10);
+  --accent-glow:     rgba(0, 163, 92, 0.20);
+  --accent-border:   rgba(0, 163, 92, 0.35);
+
+  --cyan:            #0096C7;
+  --cyan-dim:        rgba(0, 150, 199, 0.08);
+  --cyan-glow:       rgba(0, 150, 199, 0.20);
+  --cyan-border:     rgba(0, 150, 199, 0.30);
+
+  --magenta:         #C400C4;
+  --magenta-dim:     rgba(196, 0, 196, 0.08);
+  --magenta-glow:    rgba(196, 0, 196, 0.18);
+  --magenta-border:  rgba(196, 0, 196, 0.30);
+
+  --warning:         #B36B00;
+  --warning-dim:     rgba(179, 107, 0, 0.10);
+  --danger:          #D11149;
+  --danger-dim:      rgba(209, 17, 73, 0.10);
+  --success:         #00A35C;
+
+  --border:          #D2D9E8;
+  --border-subtle:   rgba(0, 0, 0, 0.06);
+}
+
 /* ── Reset ──────────────────────────────────────────────── */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -178,6 +217,33 @@ body {
   color: var(--danger);
   background: var(--danger-dim);
   box-shadow: 0 0 10px rgba(255,51,102,0.3);
+}
+
+/* ── Header actions (theme toggle + badge) ──────────────── */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--fg);
+  transition: var(--transition);
+}
+.theme-toggle:hover {
+  border-color: var(--cyan-border);
+  box-shadow: 0 0 8px var(--cyan-glow);
 }
 
 /* ── Warning Banner ─────────────────────────────────────── */

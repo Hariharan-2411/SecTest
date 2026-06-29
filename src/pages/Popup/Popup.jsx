@@ -3,9 +3,17 @@ import './Popup.css';
 import { DEFAULT_VULNS } from '../../utils/payloads';
 import OllamaPayloadAssistant from '../../utils/ollamaIntegration';
 import { useToast } from '../../components/ToastProvider';
+import { useTheme } from '../../hooks/useTheme';
+
+const THEME_META = {
+  dark: { icon: '🌙', label: 'Dark' },
+  light: { icon: '☀️', label: 'Light' },
+  system: { icon: '🖥️', label: 'System' },
+};
 
 const Popup = () => {
   const toast = useToast();
+  const { theme, cycle } = useTheme();
   const [elements, setElements] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [loading, setLoading] = useState(false);
@@ -631,8 +639,18 @@ const Popup = () => {
           <span className="header-icon"><IconShield /></span>
           SecTest Pro
         </h2>
-        <div className={`status-badge${dryRunMode ? '' : ' live'}`}>
-          {dryRunMode ? 'Dry Run' : 'Live'}
+        <div className="header-actions">
+          <button
+            className="theme-toggle"
+            onClick={cycle}
+            title={`Theme: ${THEME_META[theme].label} (click to change)`}
+            aria-label={`Theme: ${THEME_META[theme].label}`}
+          >
+            {THEME_META[theme].icon}
+          </button>
+          <div className={`status-badge${dryRunMode ? '' : ' live'}`}>
+            {dryRunMode ? 'Dry Run' : 'Live'}
+          </div>
         </div>
       </div>
 
