@@ -1,10 +1,64 @@
+console.log('SecTest Pro - Content Script Loaded');
+
+import {
+  collectFields,
+  extractPageRecon,
+} from '../../utils/extraction';
+
+// Form element scanner. Field extraction now delegates to the tested, pure
+// extraction core (src/utils/extraction.js); this class remains the stateful
+// adapter that keeps live DOM references for later payload injection.
 class FormScanner {
   constructor() {
     this.scannedElements = [];
     this.scanId = Date.now();
+    this.lastScanMeta = { unscannable: { crossOriginFrames: 0 } };
   }
 
   scanPage() {
+    this.scanId = Date.now();
+
+    // Deep traversal: light DOM + open shadow roots + same-origin iframes.
+    const { fields, unscannable } = collectFields(document.body, {
+      scanId: this.scanId,
+    });
+
+    // Backfill a name for unnamed fields (preserves the old UI behaviour) and
+    // attach an xpath for traceability.
+    fields.forEach((f, index) => {
+      if (!f.name) f.name = `unnamed_${f.type}_${index}`;
+      try {
+        if (f.element) f.xpath = this.getXPath(f.element);
+      } catch (_) {
+        f.xpath = '';
+      }
+    });
+
+    this.scannedElements = fields;
+    this.lastScanMeta = { unscannable };
+
+    console.log(
+      `Scanned ${fields.length} form elements ` +
+        `(${unscannable.crossOriginFrames} cross-origin frame(s) unscannable)`
+    );
+
+    // Strip live DOM references before messaging.
+    return fields.map((el) => ({ ...el, element: null }));
+  }
+
+  // Read-only passive recon of the current page (no network requests).
+  getPageRecon() {
+    return extractPageRecon({ documentRef: document, windowRef: window });
+  }
+
+  // Full page source / DOM snapshot for offline analysis & reporting.
+  getPageSource() {
+    return {
+      url: window.location.href,
+      title: document.title,
+      capturedAt: new Date().toISOString(),
+      html: document.documentElement.outerHTML,
+    };
     this.scannedElements = [];
 
     const inputs = document.querySelectorAll('input');
@@ -154,7 +208,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'scanPage') {
     const results = scanner.scanPage();
-    sendResponse({ success: true, elements: results });
+    sendResponse({
+      success: true,
+      elements: results,
+      unscannable: scanner.lastScanMeta.unscannable,
+    });
+  }
+
+  if (request.action === 'getPageRecon') {
+    try {
+      const recon = scanner.getPageRecon();
+      sendResponse({ success: true, recon });
+    } catch (e) {
+      sendResponse({ success: false, message: String(e && e.message) });
+    }
+  }
+
+  if (request.action === 'extractPageSource') {
+    try {
+      const source = scanner.getPageSource();
+      sendResponse({ success: true, source });
+    } catch (e) {
+      sendResponse({ success: false, message: String(e && e.message) });
+    }
   }
 
   if (request.action === 'insertTestMarker') {

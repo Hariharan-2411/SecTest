@@ -1057,6 +1057,73 @@ body {
   text-align: center;
   margin-bottom: 10px;
 }
+
+/* --- Attack-surface tags & recon (added for enhanced extraction) --- */
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: #e0e7ff;
+  color: #3730a3;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* High-signal tags get warning colors */
+.tag-hidden,
+.tag-csrf-token,
+.tag-redirect-param,
+.tag-id-param {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.tag-file-upload,
+.tag-password {
+  background: #fce4ec;
+  color: #ad1457;
+}
+
+.tag-unvalidated {
+  background: #ffebee;
+  color: #b71c1c;
+}
+
+.tag-fw {
+  background: #e8f5e9;
+  color: #1b5e20;
+  margin-left: 4px;
+}
+
+.recon-panel {
+  padding: 8px;
+}
+
+.recon-section {
+  margin: 10px 0;
+  padding: 8px;
+  background: #fafafa;
+  border-radius: 6px;
+}
+
+.recon-section h4 {
+  margin: 0 0 6px;
+  color: #667eea;
+  font-size: 13px;
+}
+
+.recon-section code {
+  font-size: 11px;
+}
 .si-modal-title {
   font-size: 15px;
   font-weight: 700;
