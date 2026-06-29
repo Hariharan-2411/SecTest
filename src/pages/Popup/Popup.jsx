@@ -5,6 +5,7 @@ import * as ai from '../../utils/aiProvider';
 import { DEFAULT_MODEL, decorate } from '../../utils/aiModels';
 import { useToast } from '../../components/ToastProvider';
 import { useTheme } from '../../hooks/useTheme';
+import { useResizable } from '../../hooks/useResizable';
 import Login from './Login';
 import AccountMenu from './AccountMenu';
 import * as auth from '../../utils/auth';
@@ -18,6 +19,7 @@ const THEME_META = {
 const Popup = () => {
   const toast = useToast();
   const { theme, cycle } = useTheme();
+  const { onResizeStart } = useResizable();
   const [elements, setElements] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [loading, setLoading] = useState(false);
@@ -711,6 +713,15 @@ const Popup = () => {
     </button>
   );
 
+  const resizeHandle = (
+    <div
+      className="resize-handle"
+      onPointerDown={onResizeStart}
+      title="Drag to resize"
+      aria-label="Resize"
+    />
+  );
+
   // ── Auth gate ──────────────────────────────────────────────
   const verified = auth.isVerified(authSession);
 
@@ -733,6 +744,7 @@ const Popup = () => {
           <div className="header-actions">{ThemeToggleButton}</div>
         </div>
         <Login onAuthed={refreshSession} />
+        {resizeHandle}
       </div>
     );
   }
@@ -1208,6 +1220,7 @@ const Popup = () => {
           </div>
         </div>
       )}
+      {resizeHandle}
     </div>
   );
 };

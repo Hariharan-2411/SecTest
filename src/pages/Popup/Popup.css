@@ -51,6 +51,9 @@
   --radius-pill: 999px;
 
   --transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+
+  --popup-w: 600px;
+  --popup-h: 560px;
 }
 
 /* ── Light theme overrides ──────────────────────────────────
@@ -95,19 +98,21 @@
 /* ── Reset ──────────────────────────────────────────────── */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+html { width: var(--popup-w, 600px); }
+
 body {
   margin: 0;
   padding: 0;
-  width: 600px;
-  min-height: 420px;
+  width: var(--popup-w, 600px);
+  min-height: var(--popup-h, 560px);
   background: var(--bg);
   overflow: hidden;
 }
 
 /* ── Container + Scanlines ──────────────────────────────── */
 .sectest-container {
-  width: 600px;
-  min-height: 400px;
+  width: var(--popup-w, 600px);
+  height: var(--popup-h, 560px);
   max-height: 600px;
   overflow-y: auto;
   overflow-x: hidden;
@@ -1529,3 +1534,21 @@ body {
 }
 .ai-chat-input textarea:focus { outline: none; border-color: var(--cyan-border); box-shadow: 0 0 8px var(--cyan-glow); }
 .ai-chat-input .btn-primary { white-space: nowrap; }
+
+/* ================================================================
+   Resize handle (drag the popup bigger/smaller)
+   ================================================================ */
+.resize-handle {
+  position: fixed;
+  right: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 10000;
+  touch-action: none;
+  background:
+    linear-gradient(135deg, transparent 0 45%, var(--fg-muted) 45% 55%, transparent 55% 70%, var(--fg-muted) 70% 80%, transparent 80%);
+  opacity: 0.6;
+}
+.resize-handle:hover { opacity: 1; }
