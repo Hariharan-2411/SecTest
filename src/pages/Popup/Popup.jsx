@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import './Popup.css';
 import { DEFAULT_VULNS } from '../../utils/payloads';
 import OllamaPayloadAssistant from '../../utils/ollamaIntegration';
+import { useToast } from '../../components/ToastProvider';
 
 const Popup = () => {
+  const toast = useToast();
   const [elements, setElements] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [loading, setLoading] = useState(false);
@@ -176,7 +178,7 @@ const Popup = () => {
 
   const scanPage = async () => {
     if (!isHostAllowed(currentUrl)) {
-      alert('⚠️ Current host is not in allowlist! Add it in settings first.');
+      toast.error('Current host is not in allowlist! Add it in settings first.');
       return;
     }
 
@@ -187,7 +189,7 @@ const Popup = () => {
       // extension load) before messaging.
       const ready = await ensureContentScript(tab);
       if (!ready) {
-        alert('Content script could not be reached on this page. Open a normal http(s) page and try again.');
+        toast.error('Content script could not be reached on this page. Open a normal http(s) page and try again.');
         setLoading(false);
         return;
       }
@@ -195,7 +197,7 @@ const Popup = () => {
       chrome.tabs.sendMessage(tab.id, { action: 'scanPage' }, (response) => {
         if (chrome.runtime.lastError) {
           console.error('Error:', chrome.runtime.lastError);
-          alert('Error: Please refresh the page and try again.');
+          toast.error('Please refresh the page and try again.');
           setLoading(false);
           return;
         }
@@ -216,7 +218,7 @@ const Popup = () => {
   // Passive recon: ask the content script to read the loaded page (no requests).
   const runRecon = async () => {
     if (!isHostAllowed(currentUrl)) {
-      alert('⚠️ Current host is not in allowlist! Add it in settings first.');
+      toast.error('Current host is not in allowlist! Add it in settings first.');
       return;
     }
     setReconLoading(true);
@@ -224,7 +226,7 @@ const Popup = () => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       const ready = await ensureContentScript(tab);
       if (!ready) {
-        alert('Content script could not be reached on this page. Open a normal http(s) page and try again.');
+        toast.error('Content script could not be reached on this page. Open a normal http(s) page and try again.');
         setReconLoading(false);
         return;
       }
@@ -234,7 +236,7 @@ const Popup = () => {
           setRecon(response.recon);
           addToAuditLog('PASSIVE_RECON', { endpoints: response.recon.endpoints?.length || 0 }, 'SUCCESS');
         } else {
-          alert('❌ Recon failed: ' + (response?.message || lastErr || 'unknown error'));
+          toast.error('Recon failed: ' + (response?.message || lastErr || 'unknown error'));
         }
         setReconLoading(false);
       });
@@ -251,14 +253,14 @@ const Popup = () => {
       { action: 'activeRecon', pageUrl: currentUrl, endpoints, includeDiscovered },
       (response) => {
         if (chrome.runtime.lastError) {
-          alert('Error: ' + chrome.runtime.lastError.message);
+          toast.error('Error: ' + chrome.runtime.lastError.message);
           return;
         }
         setActiveReconResult(response);
         if (response && response.success && response.dryRun) {
-          alert(`🔒 DRY RUN: would fetch ${response.wouldFetch.length} URL(s). Disable Dry Run to execute.`);
+          toast.info(`🔒 DRY RUN: would fetch ${response.wouldFetch.length} URL(s). Disable Dry Run to execute.`);
         } else if (response && !response.success) {
-          alert('❌ Active recon blocked: ' + (response.reason || 'unknown'));
+          toast.error('Active recon blocked: ' + (response.reason || 'unknown'));
         }
       }
     );
@@ -269,16 +271,16 @@ const Popup = () => {
       { action: 'probeEndpoint', pageUrl: currentUrl, endpoint },
       (response) => {
         if (chrome.runtime.lastError) {
-          alert('Error: ' + chrome.runtime.lastError.message);
+          toast.error('Error: ' + chrome.runtime.lastError.message);
           return;
         }
         if (response && response.success && response.dryRun) {
-          alert(`🔒 DRY RUN: would GET ${response.wouldFetch}`);
+          toast.info(`🔒 DRY RUN: would GET ${response.wouldFetch}`);
         } else if (response && response.success) {
           const r = response.result || {};
-          alert(`Probed ${r.url}\nStatus: ${r.status} ${r.ok ? '✅' : ''}`);
+          toast.info(`Probed ${r.url} — Status: ${r.status} ${r.ok ? '✅' : ''}`);
         } else {
-          alert('❌ Probe blocked: ' + (response?.reason || 'unknown'));
+          toast.error('Probe blocked: ' + (response?.reason || 'unknown'));
         }
       }
     );
@@ -290,7 +292,7 @@ const Popup = () => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       const ready = await ensureContentScript(tab);
       if (!ready) {
-        alert('Content script could not be reached on this page. Open a normal http(s) page and try again.');
+        toast.error('Content script could not be reached on this page. Open a normal http(s) page and try again.');
         return;
       }
       chrome.tabs.sendMessage(tab.id, { action: 'extractPageSource' }, (response) => {
@@ -303,17 +305,17 @@ const Popup = () => {
           link.click();
           addToAuditLog('EXPORT_PAGE_SOURCE', { url: response.source.url }, 'SUCCESS');
         } else {
-          alert('❌ Could not capture page source');
+          toast.error('Could not capture page source');
         }
       });
     } catch (e) {
-      alert('Export failed: ' + e.message);
+      toast.error('Export failed: ' + e.message);
     }
   };
 
   const confirmAndExecute = (action, element, callback) => {
     if (dryRunMode) {
-      alert(`🔒 DRY RUN MODE: Would execute ${action} on ${element.name || element.type}`);
+      toast.info(`🔒 DRY RUN MODE: Would execute ${action} on ${element.name || element.type}`);
       addToAuditLog(action, element, 'DRY_RUN');
       return;
     }
@@ -379,7 +381,7 @@ const Popup = () => {
       }
       setPayloadSource('file');
     } catch (err) {
-      alert('Failed to read file');
+      toast.error('Failed to read file');
     }
   };
 
@@ -398,7 +400,7 @@ const Popup = () => {
       setPayloadSource('llm');
     } catch (e) {
       const msg = ollama?.getLastError?.() || e?.message || 'LLM not available or failed to generate.';
-      alert(msg);
+      toast.error(msg);
       setOllamaError(msg);
     } finally {
       setLlmLoading(false);
@@ -421,7 +423,7 @@ const Popup = () => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       const ready = await ensureContentScript(tab);
       if (!ready) {
-        alert('Content script could not be reached on this page. Open a normal http(s) page and try again.');
+        toast.error('Content script could not be reached on this page. Open a normal http(s) page and try again.');
         return;
       }
       // send only selected uniqueIds (if any); otherwise target all elements
@@ -440,7 +442,7 @@ const Popup = () => {
           (response) => {
             if (response && response.success) {
               const successCount = response.results.filter(r => r.success).length;
-              alert(`✅ File attached to ${successCount}/${response.results.length} fields`);
+              toast.success(`File attached to ${successCount}/${response.results.length} fields`);
               addToAuditLog('ATTACH_FILE', { file: fileData.name, results: response.results }, 'SUCCESS');
               try {
                 savePayloadHistory({
@@ -452,7 +454,7 @@ const Popup = () => {
                 });
               } catch (e) { console.warn('Could not save payload history', e); }
             } else {
-              alert('❌ Failed to attach file');
+              toast.error('Failed to attach file');
               addToAuditLog('ATTACH_FILE', { file: fileData.name }, 'FAILED');
             }
           }
@@ -469,7 +471,7 @@ const Popup = () => {
           (response) => {
             if (response && response.success) {
               const successCount = response.results.filter(r => r.success).length;
-              alert(`✅ ${vuln.label} test applied to ${successCount}/${response.results.length} fields`);
+              toast.success(`${vuln.label} test applied to ${successCount}/${response.results.length} fields`);
               addToAuditLog('VULN_TEST', { vuln: vuln.key, results: response.results }, 'SUCCESS');
               // Save to payload history for later reuse
               try {
@@ -484,7 +486,7 @@ const Popup = () => {
                 console.warn('Could not save payload history', e);
               }
             } else {
-              alert('❌ Failed to execute test');
+              toast.error('Failed to execute test');
               addToAuditLog('VULN_TEST', { vuln: vuln.key }, 'FAILED');
             }
           }
@@ -576,7 +578,7 @@ const Popup = () => {
   const copyHistoryEntry = async (entry) => {
     if (!entry || !entry.payloads) return;
     const text = entry.payloads.join('\n');
-    try { await navigator.clipboard.writeText(text); } catch (e) { alert('Copy failed'); }
+    try { await navigator.clipboard.writeText(text); } catch (e) { toast.error('Copy failed'); }
   };
 
   const deleteHistoryEntry = (index) => {
