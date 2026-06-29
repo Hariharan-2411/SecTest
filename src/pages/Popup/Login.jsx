@@ -81,7 +81,7 @@ export default function Login({ onAuthed }) {
 
   const goSignup = () => run(async () => {
     await auth.signUp(email, password);
-    toast.success('Account created — check your email for a 6-digit code.');
+    toast.success('Account created — check your email for a verification code.');
     setCode('');
     setCooldown(COOLDOWN_SECONDS);
     setMode('verify');
@@ -168,8 +168,8 @@ export default function Login({ onAuthed }) {
       {mode === 'verify' && (
         <form className="auth-form" onSubmit={onSubmit(goVerify)}>
           <h3>Verify your email</h3>
-          <p className="auth-hint">Enter the 6-digit code sent to {email || 'your email'}.</p>
-          <input inputMode="numeric" value={code} onChange={(e) => setCode(e.target.value)} placeholder="123456" maxLength={6} required />
+          <p className="auth-hint">Enter the verification code sent to {email || 'your email'}.</p>
+          <input inputMode="numeric" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Verification code" maxLength={8} required />
           <button type="submit" className="btn-primary" disabled={busy}>{busy ? '…' : 'Verify'}</button>
           <div className="auth-links">
             {resendButton('signup')}
@@ -181,7 +181,7 @@ export default function Login({ onAuthed }) {
       {mode === 'forgot' && (
         <form className="auth-form" onSubmit={onSubmit(goForgot)}>
           <h3>Reset password</h3>
-          <p className="auth-hint">We'll email you a 6-digit code.</p>
+          <p className="auth-hint">We'll email you a verification code.</p>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" autoComplete="username" required />
           <button type="submit" className="btn-primary" disabled={busy}>{busy ? '…' : 'Send code'}</button>
           <div className="auth-links">
@@ -194,7 +194,7 @@ export default function Login({ onAuthed }) {
         <form className="auth-form" onSubmit={onSubmit(goReset)}>
           <h3>Set a new password</h3>
           <p className="auth-hint">Enter the code sent to {email || 'your email'} and a new password.</p>
-          <input inputMode="numeric" value={code} onChange={(e) => setCode(e.target.value)} placeholder="123456" maxLength={6} required />
+          <input inputMode="numeric" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Verification code" maxLength={8} required />
           <PasswordInput value={newPassword} onChange={setNewPassword} placeholder="New password (min 6 chars)" autoComplete="new-password" show={showPw} onToggle={togglePw} />
           <button type="submit" className="btn-primary" disabled={busy}>{busy ? '…' : 'Update password'}</button>
           <div className="auth-links">

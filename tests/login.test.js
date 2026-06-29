@@ -68,7 +68,7 @@ describe('Login', () => {
     submit(container);
     await screen.findByText('Verify your email');
 
-    type(screen.getByPlaceholderText('123456'), '654321');
+    type(screen.getByPlaceholderText('Verification code'), '654321');
     submit(container);
     await waitFor(() => expect(auth.verifyOtp).toHaveBeenCalledWith('new@b.com', '654321'));
     await waitFor(() => expect(onAuthed).toHaveBeenCalled());
