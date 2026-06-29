@@ -1401,3 +1401,44 @@ body {
   border-top: 1px solid var(--border-subtle);
 }
 .account-logout:hover { text-decoration: underline; }
+
+/* ================================================================
+   AI model selector + status dot
+   ================================================================ */
+.ai-model-select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.ai-model-select:focus {
+  outline: none;
+  border-color: var(--cyan-border);
+  box-shadow: 0 0 8px var(--cyan-glow);
+}
+
+.ai-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.ai-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--fg-muted);
+}
+.ai-dot-ok { background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
+.ai-dot-down { background: var(--danger); box-shadow: 0 0 6px rgba(255,51,102,0.4); }
+.ai-dot-checking { background: var(--warning); }

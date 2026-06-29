@@ -9,8 +9,6 @@
 //   POST  /groq-proxy          → { context, model } → { payload, explanation }
 //   GET   /groq-proxy/models   → { models: string[] }  (live Groq model list)
 
-import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
-
 const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY') ?? '';
 const GROQ_BASE = 'https://api.groq.com/openai/v1';
 const DEFAULT_MODEL = 'llama-3.3-70b-versatile';
@@ -88,7 +86,7 @@ function parsePayload(text: string) {
   };
 }
 
-serve(async (req: Request) => {
+Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }

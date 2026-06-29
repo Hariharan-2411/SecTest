@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import './Popup.css';
 import { DEFAULT_VULNS } from '../../utils/payloads';
-import OllamaPayloadAssistant from '../../utils/ollamaIntegration';
+import * as ai from '../../utils/aiProvider';
+import { DEFAULT_MODEL, decorate } from '../../utils/aiModels';
 import { useToast } from '../../components/ToastProvider';
 import { useTheme } from '../../hooks/useTheme';
 import Login from './Login';
@@ -35,18 +36,10 @@ const Popup = () => {
   const [fileData, setFileData] = useState(null); // { base64, mime, name }
   const [llmPayload, setLlmPayload] = useState('');
   const [llmLoading, setLlmLoading] = useState(false);
-  const [ollamaAvailable, setOllamaAvailable] = useState(false);
-  const [ollama] = useState(() => {
-    try {
-      return new OllamaPayloadAssistant();
-    } catch (e) {
-      return null;
-    }
-  });
-  const [ollamaUrl, setOllamaUrl] = useState('http://127.0.0.1:11434');
-  const [ollamaModel, setOllamaModel] = useState('llama3.2:1b');
-  const [ollamaError, setOllamaError] = useState('');
-  const [ollamaStatus, setOllamaStatus] = useState('');
+  const [aiModel, setAiModel] = useState(DEFAULT_MODEL); // selected Groq model id
+  const [aiModels, setAiModels] = useState(() => decorate()); // decorated list
+  const [aiReachable, setAiReachable] = useState(null); // null=checking, bool=result
+  const [aiError, setAiError] = useState('');
   const [activeTab, setActiveTab] = useState('Scan'); // 'Scan' | 'Payloads' | 'Recon' | 'History' | 'Settings'
   const [payloadHistory, setPayloadHistory] = useState([]);
   const [recon, setRecon] = useState(null); // passive page recon snapshot
@@ -60,11 +53,12 @@ const Popup = () => {
 
   useEffect(() => {
     // Load settings from storage
-    chrome.storage.local.get(['allowlist', 'dryRunMode', 'auditLog'], (result) => {
+    chrome.storage.local.get(['allowlist', 'dryRunMode', 'auditLog', 'aiModel'], (result) => {
       setAllowlist(result.allowlist || ['*']);
       setDryRunMode(result.dryRunMode !== undefined ? result.dryRunMode : true);
       setAuditLog(result.auditLog || []);
       setPayloadHistory(result.payloadHistory || []);
+      if (result.aiModel) setAiModel(result.aiModel);
     });
 
     // Get current tab URL
@@ -74,26 +68,37 @@ const Popup = () => {
       }
     });
 
-    // Check Ollama availability in the background
+  }, []);
+
+  // Probe the AI proxy (models list = reachability) once the user is verified.
+  useEffect(() => {
+    if (!authReady || !auth.isVerified(authSession)) return;
+    let cancelled = false;
     (async () => {
+      setAiReachable(null);
       try {
-        if (ollama) {
-          ollama.setBaseUrl(ollamaUrl);
-          ollama.setModel(ollamaModel);
-        }
-        if (ollama && (await ollama.checkAvailability())) {
-          setOllamaAvailable(true);
-          setOllamaError('');
-        } else {
-          setOllamaAvailable(false);
-          setOllamaError(ollama?.getLastError?.() || '');
-        }
-      } catch (_) {
-        setOllamaAvailable(false);
-        setOllamaError(ollama?.getLastError?.() || '');
+        const ids = await ai.listModels();
+        if (cancelled) return;
+        setAiModels(decorate(ids));
+        setAiReachable(true);
+        setAiError('');
+      } catch (e) {
+        if (cancelled) return;
+        setAiReachable(false);
+        setAiError((e && e.message) || 'AI proxy unreachable');
       }
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, authSession]);
+
+  const onSelectModel = (id) => {
+    setAiModel(id);
+    try {
+      chrome.storage.local.set({ aiModel: id });
+    } catch (_) {}
+  };
 
   // Auth gate: load the current session and react to sign-in/out.
   useEffect(() => {
@@ -431,22 +436,23 @@ const Popup = () => {
   };
 
   const fetchLlmSuggestion = async () => {
-    if (!ollama) return;
     const vuln = DEFAULT_VULNS.find(v => v.key === selectedVuln);
     setLlmLoading(true);
     try {
-      const suggestion = await ollama.generatePayload({
+      const suggestion = await ai.generatePayload({
         elementType: 'input',
         elementName: '*',
         testType: 'Payload Generation',
         vulnerability: vuln?.label || selectedVuln,
-      });
+      }, aiModel);
       setLlmPayload(suggestion.payload || '');
       setPayloadSource('llm');
+      setAiReachable(true);
+      toast.success('Payload generated');
     } catch (e) {
-      const msg = ollama?.getLastError?.() || e?.message || 'LLM not available or failed to generate.';
+      const msg = (e && e.message) || 'AI generation failed.';
       toast.error(msg);
-      setOllamaError(msg);
+      setAiError(msg);
     } finally {
       setLlmLoading(false);
     }
@@ -714,6 +720,10 @@ const Popup = () => {
           SecTest Pro
         </h2>
         <div className="header-actions">
+          <span
+            className={`ai-dot ai-dot-${aiReachable === null ? 'checking' : aiReachable ? 'ok' : 'down'}`}
+            title={aiReachable === null ? 'Checking AI proxy…' : aiReachable ? 'AI proxy connected' : 'AI proxy unreachable'}
+          />
           {ThemeToggleButton}
           <div className={`status-badge${dryRunMode ? '' : ' live'}`}>
             {dryRunMode ? 'Dry Run' : 'Live'}
@@ -876,20 +886,19 @@ const Popup = () => {
               disabled={payloadSource !== 'text'}
             />
 
-            <label title={ollamaAvailable ? 'Ollama detected on 127.0.0.1:11434' : 'Start Ollama: `ollama serve` and ensure a model like llama3 is pulled'}>
+            <label title="Generate a payload with AI (Groq)">
               <input
                 type="radio"
                 name="payloadSource"
                 value="llm"
                 checked={payloadSource === 'llm'}
                 onChange={(e) => setPayloadSource(e.target.value)}
-                disabled={!ollamaAvailable}
               />
-              LLM suggestion {ollamaAvailable ? '' : '(Ollama not available)'}
+              AI suggestion
             </label>
             <div className="llm-row">
-              <button className="btn-small" onClick={fetchLlmSuggestion} disabled={!ollamaAvailable || llmLoading}>
-                {llmLoading ? '⏳ Generating…' : '✨ Generate with LLM'}
+              <button className="btn-small" onClick={fetchLlmSuggestion} disabled={llmLoading}>
+                {llmLoading ? '⏳ Generating…' : '✨ Generate with AI'}
               </button>
               <textarea
                 rows={2}
@@ -898,10 +907,10 @@ const Popup = () => {
                 readOnly
               />
             </div>
-            {!ollamaAvailable && (
+            {aiReachable === false && (
               <div className="llm-hint">
-                Ollama not reachable at {ollamaUrl}. Ensure "ollama serve" is running and a model (e.g., {ollamaModel}) is pulled.
-                {ollamaError && <div className="llm-error">Last error: {ollamaError}</div>}
+                AI proxy not reachable. Check that the Edge Function is deployed and you're logged in.
+                {aiError && <div className="llm-error">Last error: {aiError}</div>}
               </div>
             )}
           </div>
@@ -1066,63 +1075,25 @@ const Popup = () => {
           </div>
 
           <div className="setting-item">
-            <h4>LLM (Ollama) Advanced</h4>
-            <div className="allowlist-input">
-              <input
-                type="text"
-                value={ollamaUrl}
-                onChange={(e) => setOllamaUrl(e.target.value)}
-                placeholder="http://127.0.0.1:11434"
-              />
-              <input
-                type="text"
-                value={ollamaModel}
-                onChange={(e) => setOllamaModel(e.target.value)}
-                placeholder="llama3.2:1b"
-              />
-              <button
-                className="btn-small"
-                onClick={async () => {
-                  if (!ollama) return;
-                  ollama.setBaseUrl(ollamaUrl);
-                  ollama.setModel(ollamaModel);
-                  const ok = await ollama.checkAvailability();
-                  setOllamaAvailable(ok);
-                  setOllamaError(ollama.getLastError?.() || '');
-                  setOllamaStatus(ok ? 'Connected' : '');
-                }}
-              >
-                Test Connection
-              </button>
+            <h4>AI Model (Groq)</h4>
+            <select
+              className="ai-model-select"
+              value={aiModel}
+              onChange={(e) => onSelectModel(e.target.value)}
+            >
+              {aiModels.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+            <div className="ai-status-row">
+              <span className={`ai-dot ai-dot-${aiReachable === null ? 'checking' : aiReachable ? 'ok' : 'down'}`} />
+              <span className="ai-status-text">
+                {aiReachable === null ? 'Checking AI proxy…' : aiReachable ? 'AI proxy connected' : 'AI proxy unreachable'}
+              </span>
             </div>
-            {ollamaAvailable && ollamaStatus && (
-              <div className="llm-ok">{ollamaStatus}</div>
+            {aiReachable === false && aiError && (
+              <div className="llm-error">{aiError}</div>
             )}
-            {!ollamaAvailable && ollamaError && (
-              <div className="llm-error">
-                {ollamaError}
-                {ollamaError.includes('403') && (
-                  <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.4 }}>
-                    <strong>403 Forbidden:</strong> Ollama rejected the extension origin.<br />
-                    Fix A (recommended): Restart Ollama with an origin allowlist including <code>chrome-extension://{extensionId}</code><br />
-                    <code style={{ display: 'block', whiteSpace: 'pre-wrap', background: '#eef2ff', padding: '4px 6px', borderRadius: 4, marginTop: 4 }}>
-                      {`# Example (macOS/Linux shell):
-  export OLLAMA_ORIGINS='http://127.0.0.1 http://localhost chrome-extension://${extensionId}'
-  ollama serve`}
-                    </code>
-                    Fix B: Use the local proxy (see below) and set base URL to <code>http://127.0.0.1:5000</code>.
-                  </div>
-                )}
-              </div>
-            )}
-            {/* Proxy helper guidance */}
-            <div style={{ marginTop: 16 }}>
-              <h4 style={{ margin: '8px 0' }}>Proxy Workaround</h4>
-              <p style={{ fontSize: 12, margin: '4px 0 8px' }}>If you cannot modify Ollama origins, run the provided proxy (scripts/ollama-proxy.js) then set Base URL to <code>http://127.0.0.1:5000</code>. It strips the Origin header so POST /api/generate succeeds.</p>
-              {ollamaError.includes('403') && (
-                <p style={{ fontSize: 12, color: '#b00020' }}>403 detected – proxy workaround is available. See project scripts folder.</p>
-              )}
-            </div>
           </div>
         </div>
       )}
