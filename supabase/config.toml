@@ -1,0 +1,4 @@
+project_id = "yohvxqjdqbbkrclxyeqd"
+
+[functions.groq-proxy]
+verify_jwt = true
