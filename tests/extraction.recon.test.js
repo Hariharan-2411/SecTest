@@ -127,6 +127,27 @@ describe('extractPageRecon', () => {
     expect(recon.sessionStorageKeys).toContain('cart');
   });
 
+  it('survives storage getters that throw (e.g. Brave Shields / blocked storage)', () => {
+    const windowRef = {};
+    // Property access itself throws a SecurityError, like blocked DOM storage.
+    Object.defineProperty(windowRef, 'localStorage', {
+      get() {
+        throw new DOMException('Access is denied for this document', 'SecurityError');
+      },
+    });
+    Object.defineProperty(windowRef, 'sessionStorage', {
+      get() {
+        throw new DOMException('Access is denied for this document', 'SecurityError');
+      },
+    });
+    let recon;
+    expect(() => {
+      recon = extractPageRecon({ documentRef: document, windowRef });
+    }).not.toThrow();
+    expect(recon.localStorageKeys).toEqual([]);
+    expect(recon.sessionStorageKeys).toEqual([]);
+  });
+
   it('includes framework fingerprint', () => {
     setBody('<script src="/react.production.min.js"></script>');
     const recon = extractPageRecon({ documentRef: document, windowRef: { React: {} } });

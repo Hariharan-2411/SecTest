@@ -588,9 +588,20 @@ export function extractPageRecon({ documentRef, windowRef = {} } = {}) {
       .filter(Boolean);
   } catch (_) {}
 
-  // Storage keys (names only).
-  recon.localStorageKeys = storageKeys(windowRef.localStorage);
-  recon.sessionStorageKeys = storageKeys(windowRef.sessionStorage);
+  // Storage keys (names only). Reading the localStorage/sessionStorage getter
+  // can itself throw a SecurityError when storage is blocked (e.g. Brave
+  // Shields, sandboxed/opaque-origin documents), so guard the property access
+  // — not just the helper — and degrade gracefully instead of aborting recon.
+  let ls = null;
+  let ss = null;
+  try {
+    ls = windowRef.localStorage;
+  } catch (_) {}
+  try {
+    ss = windowRef.sessionStorage;
+  } catch (_) {}
+  recon.localStorageKeys = storageKeys(ls);
+  recon.sessionStorageKeys = storageKeys(ss);
 
   // Frameworks.
   recon.frameworks = fingerprintFrameworks(windowRef, doc);

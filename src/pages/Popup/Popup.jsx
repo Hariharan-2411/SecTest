@@ -126,6 +126,54 @@ const Popup = () => {
     setSelectedIds(new Set(elements.filter(e => e.type === 'file').map(e => e.uniqueId)));
   };
 
+  // Best-effort ping. Reading chrome.runtime.lastError inside the callback
+  // suppresses the "Unchecked runtime.lastError: Could not establish
+  // connection" console noise that fires when no content script is listening.
+  const pingTab = (tabId) =>
+    new Promise((resolve) => {
+      let settled = false;
+      const done = (ok) => {
+        if (!settled) {
+          settled = true;
+          resolve(ok);
+        }
+      };
+      try {
+        chrome.tabs.sendMessage(tabId, { action: 'ping' }, (resp) => {
+          void chrome.runtime.lastError; // read to acknowledge / clear the error
+          done(Boolean(resp && resp.ok));
+        });
+      } catch (_) {
+        done(false);
+      }
+      setTimeout(() => done(false), 500);
+    });
+
+  // Ensure the content script is live in the target tab. Content scripts are
+  // only auto-injected on page load, so a tab that was already open when the
+  // extension was (re)loaded won't have one — that's the "Receiving end does
+  // not exist" error. If the ping fails, inject the script on demand via
+  // chrome.scripting, then re-ping to confirm. Returns true when reachable.
+  const ensureContentScript = async (tab) => {
+    if (!tab || tab.id == null) return false;
+    if (await pingTab(tab.id)) return true;
+
+    // chrome.scripting can't touch restricted pages (chrome://, view-source,
+    // the Web Store, etc.) — only http/https are injectable here.
+    if (!/^https?:\/\//i.test(tab.url || '')) return false;
+
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['contentScript.bundle.js'],
+      });
+    } catch (e) {
+      console.error('Content script injection failed:', e);
+      return false;
+    }
+    return pingTab(tab.id);
+  };
+
   const scanPage = async () => {
     if (!isHostAllowed(currentUrl)) {
       alert('⚠️ Current host is not in allowlist! Add it in settings first.');
@@ -135,15 +183,11 @@ const Popup = () => {
     setLoading(true);
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      // quick ping to ensure content script is available
-      const pingOk = await new Promise((resolve) => {
-        chrome.tabs.sendMessage(tab.id, { action: 'ping' }, (resp) => {
-          resolve(Boolean(resp && resp.ok));
-        });
-        setTimeout(() => resolve(false), 500);
-      });
-      if (!pingOk) {
-        alert('Content script not available on this page. Try reloading the page and re-opening the popup.');
+      // Ensure the content script is present (inject it if the page predates the
+      // extension load) before messaging.
+      const ready = await ensureContentScript(tab);
+      if (!ready) {
+        alert('Content script could not be reached on this page. Open a normal http(s) page and try again.');
         setLoading(false);
         return;
       }
@@ -178,21 +222,19 @@ const Popup = () => {
     setReconLoading(true);
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      const pingOk = await new Promise((resolve) => {
-        chrome.tabs.sendMessage(tab.id, { action: 'ping' }, (resp) => resolve(Boolean(resp && resp.ok)));
-        setTimeout(() => resolve(false), 500);
-      });
-      if (!pingOk) {
-        alert('Content script not available on this page. Try reloading the page.');
+      const ready = await ensureContentScript(tab);
+      if (!ready) {
+        alert('Content script could not be reached on this page. Open a normal http(s) page and try again.');
         setReconLoading(false);
         return;
       }
       chrome.tabs.sendMessage(tab.id, { action: 'getPageRecon' }, (response) => {
+        const lastErr = chrome.runtime.lastError && chrome.runtime.lastError.message;
         if (response && response.success) {
           setRecon(response.recon);
           addToAuditLog('PASSIVE_RECON', { endpoints: response.recon.endpoints?.length || 0 }, 'SUCCESS');
         } else {
-          alert('❌ Recon failed: ' + (response?.message || 'unknown error'));
+          alert('❌ Recon failed: ' + (response?.message || lastErr || 'unknown error'));
         }
         setReconLoading(false);
       });
@@ -246,6 +288,11 @@ const Popup = () => {
   const exportPageSource = async () => {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const ready = await ensureContentScript(tab);
+      if (!ready) {
+        alert('Content script could not be reached on this page. Open a normal http(s) page and try again.');
+        return;
+      }
       chrome.tabs.sendMessage(tab.id, { action: 'extractPageSource' }, (response) => {
         if (response && response.success) {
           const blob = new Blob([JSON.stringify(response.source, null, 2)], { type: 'application/json' });
@@ -372,12 +419,9 @@ const Popup = () => {
     }
     const executeAction = async () => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      const pingOk = await new Promise((resolve) => {
-        chrome.tabs.sendMessage(tab.id, { action: 'ping' }, (resp) => resolve(Boolean(resp && resp.ok)));
-        setTimeout(() => resolve(false), 500);
-      });
-      if (!pingOk) {
-        alert('Content script not available on this page. Try reloading the page.');
+      const ready = await ensureContentScript(tab);
+      if (!ready) {
+        alert('Content script could not be reached on this page. Open a normal http(s) page and try again.');
         return;
       }
       // send only selected uniqueIds (if any); otherwise target all elements
@@ -483,13 +527,33 @@ const Popup = () => {
   };
 
   const getElementIcon = (type) => {
-    switch (type) {
-      case 'input': return '📝';
-      case 'textarea': return '📄';
-      case 'select': return '📋';
-      case 'file': return '📎';
-      default: return '🔹';
-    }
+    const icons = {
+      input: (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="8" width="18" height="8" rx="2"/><path d="M7 12h0"/>
+        </svg>
+      ),
+      textarea: (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="7" y1="8" x2="17" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="13" y2="16"/>
+        </svg>
+      ),
+      select: (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="8" width="18" height="8" rx="2"/><path d="m15 11 2 2 2-2"/>
+        </svg>
+      ),
+      file: (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+        </svg>
+      ),
+    };
+    return icons[type] || (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+    );
   };
 
   // Persist a payload history entry (most recent first, capped)
@@ -524,37 +588,84 @@ const Popup = () => {
     });
   };
 
+  const IconShield = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    </svg>
+  );
+  const IconScan = () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+    </svg>
+  );
+  const IconPayloads = () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+    </svg>
+  );
+  const IconRecon = () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/>
+      <circle cx="12" cy="12" r="2"/>
+      <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.2 19.1 19.1"/>
+    </svg>
+  );
+  const IconHistory = () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+    </svg>
+  );
+  const IconConfig = () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/>
+      <circle cx="8" cy="6" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="10" cy="18" r="2" fill="currentColor" stroke="none"/>
+    </svg>
+  );
+
   return (
     <div className="sectest-container">
       <div className="header">
-        <h2>🔒 SecTest Pro</h2>
-        <div className="status-badge">
-          {dryRunMode ? 'DRY RUN' : 'LIVE'}
+        <h2>
+          <span className="header-icon"><IconShield /></span>
+          SecTest Pro
+        </h2>
+        <div className={`status-badge${dryRunMode ? '' : ' live'}`}>
+          {dryRunMode ? 'Dry Run' : 'Live'}
         </div>
       </div>
 
       {!isHostAllowed(currentUrl) && (
         <div className="warning-banner">
-          ⚠️ Host not allowed
+          Host not in allowlist — add it in Config
         </div>
       )}
 
       <div className="tab-nav">
-        <button className={"tab" + (activeTab === 'Scan' ? ' active' : '')} onClick={() => setActiveTab('Scan')}>🔍 Scan</button>
-        <button className={"tab" + (activeTab === 'Payloads' ? ' active' : '')} onClick={() => setActiveTab('Payloads')}>🧰 Payloads</button>
-        <button className={"tab" + (activeTab === 'Recon' ? ' active' : '')} onClick={() => setActiveTab('Recon')}>🛰️ Recon</button>
-        <button className={"tab" + (activeTab === 'History' ? ' active' : '')} onClick={() => setActiveTab('History')}>📜 History</button>
-        <button className={"tab" + (activeTab === 'Settings' ? ' active' : '')} onClick={() => setActiveTab('Settings')}>⚙️ Settings</button>
+        <button className={"tab" + (activeTab === 'Scan' ? ' active' : '')} onClick={() => setActiveTab('Scan')} aria-label="Scan">
+          <IconScan />Scan
+        </button>
+        <button className={"tab" + (activeTab === 'Payloads' ? ' active' : '')} onClick={() => setActiveTab('Payloads')} aria-label="Payloads">
+          <IconPayloads />Payloads
+        </button>
+        <button className={"tab" + (activeTab === 'Recon' ? ' active' : '')} onClick={() => setActiveTab('Recon')} aria-label="Recon">
+          <IconRecon />Recon
+        </button>
+        <button className={"tab" + (activeTab === 'History' ? ' active' : '')} onClick={() => setActiveTab('History')} aria-label="History">
+          <IconHistory />History
+        </button>
+        <button className={"tab" + (activeTab === 'Settings' ? ' active' : '')} onClick={() => setActiveTab('Settings')} aria-label="Config">
+          <IconConfig />Config
+        </button>
       </div>
 
       {activeTab === 'Scan' && (
         <div>
           <div className="controls">
             <button onClick={scanPage} disabled={loading} className="btn-primary">
-              {loading ? '⏳ Scanning...' : '🔍 Scan Page'}
+              {loading ? 'Scanning...' : 'Scan Page'}
             </button>
             <button onClick={() => setActiveTab('Settings')} className="btn-secondary">
-              ⚙️ Settings
+              Config
             </button>
             <div className="vuln-runner">
               <select value={selectedVuln} onChange={(e) => setSelectedVuln(e.target.value)}>
@@ -563,7 +674,7 @@ const Popup = () => {
                 ))}
               </select>
               <button onClick={runVulnTest} className="btn-secondary" disabled={!isHostAllowed(currentUrl)}>
-                🚀 Run Test
+                Run Test
               </button>
             </div>
           </div>
@@ -711,9 +822,9 @@ const Popup = () => {
           <h3>🛰️ Page Recon</h3>
           <div className="controls">
             <button onClick={runRecon} disabled={reconLoading} className="btn-primary">
-              {reconLoading ? '⏳ Reading…' : '🔎 Run Passive Recon'}
+              {reconLoading ? 'Reading...' : 'Run Passive Recon'}
             </button>
-            <button onClick={exportPageSource} className="btn-secondary">📥 Export Page Source</button>
+            <button onClick={exportPageSource} className="btn-secondary">Export Source</button>
           </div>
 
           {!recon && <div className="hint">Run passive recon to read the loaded page (no requests sent).</div>}
@@ -770,7 +881,7 @@ const Popup = () => {
                 <p style={{ fontSize: 12, margin: '4px 0 8px' }}>
                   Fetches robots.txt, sitemap.xml, security.txt. Honors allowlist, dry-run and rate limits.
                 </p>
-                <button className="btn-secondary" onClick={() => runActiveRecon(false)}>🌐 Fetch Recon Files</button>
+                <button className="btn-secondary" onClick={() => runActiveRecon(false)}>Fetch Recon Files</button>
                 {activeReconResult && activeReconResult.results && (
                   <div className="recon-section">
                     {activeReconResult.results.map((r, i) => (
@@ -793,7 +904,7 @@ const Popup = () => {
 
       {activeTab === 'History' && (
         <div className="history-panel">
-          <h3>📜 Payload History</h3>
+          <h3>Payload History</h3>
           {payloadHistory.length === 0 ? (
             <div className="hint">No history yet. Run tests to save payloads here.</div>
           ) : (
@@ -822,7 +933,7 @@ const Popup = () => {
 
       {activeTab === 'Settings' && (
         <div className="settings-panel">
-          <h3>⚙️ Settings</h3>
+          <h3>Configuration</h3>
 
           <div className="setting-item">
             <label>
@@ -859,7 +970,7 @@ const Popup = () => {
           <div className="setting-item">
             <h4>Audit Log ({auditLog.length} entries)</h4>
             <button onClick={exportAuditLog} className="btn-small">
-              📥 Export Log
+              Export Log
             </button>
           </div>
 
@@ -887,10 +998,10 @@ const Popup = () => {
                   const ok = await ollama.checkAvailability();
                   setOllamaAvailable(ok);
                   setOllamaError(ollama.getLastError?.() || '');
-                  setOllamaStatus(ok ? 'Connected ✅' : '');
+                  setOllamaStatus(ok ? 'Connected' : '');
                 }}
               >
-                🔁 Test Connection
+                Test Connection
               </button>
             </div>
             {ollamaAvailable && ollamaStatus && (
@@ -928,14 +1039,14 @@ const Popup = () => {
       {confirmAction && (
         <div className="modal-overlay">
           <div className="modal">
-            <h3>⚠️ Confirm Action</h3>
+            <h3>Confirm Action</h3>
             <p>{confirmAction.message}</p>
             <div className="modal-actions">
               <button onClick={handleConfirm} className="btn-confirm">
-                ✓ Confirm
+                Confirm
               </button>
               <button onClick={handleCancel} className="btn-cancel">
-                ✗ Cancel
+                Cancel
               </button>
             </div>
           </div>
