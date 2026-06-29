@@ -4,6 +4,9 @@ import { DEFAULT_VULNS } from '../../utils/payloads';
 import OllamaPayloadAssistant from '../../utils/ollamaIntegration';
 import { useToast } from '../../components/ToastProvider';
 import { useTheme } from '../../hooks/useTheme';
+import Login from './Login';
+import AccountMenu from './AccountMenu';
+import * as auth from '../../utils/auth';
 
 const THEME_META = {
   dark: { icon: '🌙', label: 'Dark' },
@@ -50,6 +53,8 @@ const Popup = () => {
   const [reconLoading, setReconLoading] = useState(false);
   const [activeReconResult, setActiveReconResult] = useState(null); // result of active recon
   const [unscannable, setUnscannable] = useState(null); // { crossOriginFrames }
+  const [authSession, setAuthSession] = useState(null); // Supabase session (gates the app)
+  const [authReady, setAuthReady] = useState(false); // initial session check done
   // Capture extension id for origin guidance
   const extensionId = chrome?.runtime?.id || '<extension-id>'; // used in 403 guidance/help text
 
@@ -89,6 +94,38 @@ const Popup = () => {
       }
     })();
   }, []);
+
+  // Auth gate: load the current session and react to sign-in/out.
+  useEffect(() => {
+    let subscription;
+    (async () => {
+      try {
+        setAuthSession(await auth.getSession());
+      } catch (_) {
+        setAuthSession(null);
+      } finally {
+        setAuthReady(true);
+      }
+    })();
+    try {
+      const { data } = auth.onAuthStateChange((_event, session) => {
+        setAuthSession(session);
+        setAuthReady(true);
+      });
+      subscription = data && data.subscription;
+    } catch (_) {}
+    return () => {
+      try {
+        subscription && subscription.unsubscribe();
+      } catch (_) {}
+    };
+  }, []);
+
+  const refreshSession = async () => {
+    try {
+      setAuthSession(await auth.getSession());
+    } catch (_) {}
+  };
 
   const isHostAllowed = (url) => {
     try {
@@ -632,6 +669,43 @@ const Popup = () => {
     </svg>
   );
 
+  const ThemeToggleButton = (
+    <button
+      className="theme-toggle"
+      onClick={cycle}
+      title={`Theme: ${THEME_META[theme].label} (click to change)`}
+      aria-label={`Theme: ${THEME_META[theme].label}`}
+    >
+      {THEME_META[theme].icon}
+    </button>
+  );
+
+  // ── Auth gate ──────────────────────────────────────────────
+  const verified = auth.isVerified(authSession);
+
+  if (!authReady) {
+    return (
+      <div className="sectest-container">
+        <div className="auth-loading">Loading…</div>
+      </div>
+    );
+  }
+
+  if (!verified) {
+    return (
+      <div className="sectest-container">
+        <div className="header">
+          <h2>
+            <span className="header-icon"><IconShield /></span>
+            SecTest Pro
+          </h2>
+          <div className="header-actions">{ThemeToggleButton}</div>
+        </div>
+        <Login onAuthed={refreshSession} />
+      </div>
+    );
+  }
+
   return (
     <div className="sectest-container">
       <div className="header">
@@ -640,17 +714,14 @@ const Popup = () => {
           SecTest Pro
         </h2>
         <div className="header-actions">
-          <button
-            className="theme-toggle"
-            onClick={cycle}
-            title={`Theme: ${THEME_META[theme].label} (click to change)`}
-            aria-label={`Theme: ${THEME_META[theme].label}`}
-          >
-            {THEME_META[theme].icon}
-          </button>
+          {ThemeToggleButton}
           <div className={`status-badge${dryRunMode ? '' : ' live'}`}>
             {dryRunMode ? 'Dry Run' : 'Live'}
           </div>
+          <AccountMenu
+            email={authSession?.user?.email}
+            onSignedOut={() => setAuthSession(null)}
+          />
         </div>
       </div>
 
