@@ -1,5 +1,3 @@
-// Test Reporter for capturing screenshots and generating coverage reports
-
 export class TestReporter {
   constructor() {
     this.testResults = {
@@ -109,7 +107,7 @@ export class TestReporter {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>SecTest Pro - Coverage Report</title>
+    <title>SecureInspect - Coverage Report</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
         .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; }
@@ -129,7 +127,7 @@ export class TestReporter {
 </head>
 <body>
     <div class="container">
-        <h1>🔒 SecTest Pro - Coverage Report</h1>
+        <h1>🔒 SecureInspect - Coverage Report</h1>
         <p><strong>Generated:</strong> ${report.timestamp}</p>
         <p><strong>URL:</strong> ${report.url}</p>
 
