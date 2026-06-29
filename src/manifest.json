@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "SecTest Pro - Form Security Tester",
+  "name": "SecureInspect - Form Security Tester",
   "version": "1.0.0",
-  "description": "Professional security testing tool for enumerating and testing web forms with guardrails and audit logging",
+  "description": "SecureInspect: Professional security testing tool for enumerating and testing web forms with guardrails and audit logging",
   "background": { "service_worker": "background.bundle.js" },
   "action": {
     "default_popup": "popup.html",
