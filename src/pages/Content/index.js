@@ -1,90 +1,64 @@
 console.log('SecTest Pro - Content Script Loaded');
 
-// Form element scanner
+import {
+  collectFields,
+  extractPageRecon,
+} from '../../utils/extraction';
+
+// Form element scanner. Field extraction now delegates to the tested, pure
+// extraction core (src/utils/extraction.js); this class remains the stateful
+// adapter that keeps live DOM references for later payload injection.
 class FormScanner {
   constructor() {
     this.scannedElements = [];
     this.scanId = Date.now();
+    this.lastScanMeta = { unscannable: { crossOriginFrames: 0 } };
   }
 
   scanPage() {
-    this.scannedElements = [];
-    
-    // Scan all input elements
-    const inputs = document.querySelectorAll('input');
-    inputs.forEach((input, index) => {
-      const elementInfo = {
-        type: 'input',
-        subType: input.type || 'text',
-        name: input.name || `unnamed_input_${index}`,
-        id: input.id || '',
-        placeholder: input.placeholder || '',
-        value: input.value || '',
-        required: input.required,
-        xpath: this.getXPath(input),
-        element: input,
-        uniqueId: `input_${index}_${this.scanId}`
-      };
-      this.scannedElements.push(elementInfo);
+    this.scanId = Date.now();
+
+    // Deep traversal: light DOM + open shadow roots + same-origin iframes.
+    const { fields, unscannable } = collectFields(document.body, {
+      scanId: this.scanId,
     });
 
-    // Scan textareas
-    const textareas = document.querySelectorAll('textarea');
-    textareas.forEach((textarea, index) => {
-      const elementInfo = {
-        type: 'textarea',
-        subType: 'textarea',
-        name: textarea.name || `unnamed_textarea_${index}`,
-        id: textarea.id || '',
-        placeholder: textarea.placeholder || '',
-        value: textarea.value || '',
-        required: textarea.required,
-        xpath: this.getXPath(textarea),
-        element: textarea,
-        uniqueId: `textarea_${index}_${this.scanId}`
-      };
-      this.scannedElements.push(elementInfo);
+    // Backfill a name for unnamed fields (preserves the old UI behaviour) and
+    // attach an xpath for traceability.
+    fields.forEach((f, index) => {
+      if (!f.name) f.name = `unnamed_${f.type}_${index}`;
+      try {
+        if (f.element) f.xpath = this.getXPath(f.element);
+      } catch (_) {
+        f.xpath = '';
+      }
     });
 
-    // Scan select elements
-    const selects = document.querySelectorAll('select');
-    selects.forEach((select, index) => {
-      const options = Array.from(select.options).map(opt => opt.value);
-      const elementInfo = {
-        type: 'select',
-        subType: 'select',
-        name: select.name || `unnamed_select_${index}`,
-        id: select.id || '',
-        options: options,
-        selectedValue: select.value,
-        required: select.required,
-        xpath: this.getXPath(select),
-        element: select,
-        uniqueId: `select_${index}_${this.scanId}`
-      };
-      this.scannedElements.push(elementInfo);
-    });
+    this.scannedElements = fields;
+    this.lastScanMeta = { unscannable };
 
-    // Scan file inputs
-    const fileInputs = document.querySelectorAll('input[type="file"]');
-    fileInputs.forEach((fileInput, index) => {
-      const elementInfo = {
-        type: 'file',
-        subType: 'file',
-        name: fileInput.name || `unnamed_file_${index}`,
-        id: fileInput.id || '',
-        accept: fileInput.accept || '*',
-        multiple: fileInput.multiple,
-        required: fileInput.required,
-        xpath: this.getXPath(fileInput),
-        element: fileInput,
-        uniqueId: `file_${index}_${this.scanId}`
-      };
-      this.scannedElements.push(elementInfo);
-    });
+    console.log(
+      `Scanned ${fields.length} form elements ` +
+        `(${unscannable.crossOriginFrames} cross-origin frame(s) unscannable)`
+    );
 
-    console.log(`Scanned ${this.scannedElements.length} form elements`);
-    return this.scannedElements.map(el => ({...el, element: null})); // Remove DOM reference for messaging
+    // Strip live DOM references before messaging.
+    return fields.map((el) => ({ ...el, element: null }));
+  }
+
+  // Read-only passive recon of the current page (no network requests).
+  getPageRecon() {
+    return extractPageRecon({ documentRef: document, windowRef: window });
+  }
+
+  // Full page source / DOM snapshot for offline analysis & reporting.
+  getPageSource() {
+    return {
+      url: window.location.href,
+      title: document.title,
+      capturedAt: new Date().toISOString(),
+      html: document.documentElement.outerHTML,
+    };
   }
 
   getXPath(element) {
@@ -167,7 +141,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'scanPage') {
     const results = scanner.scanPage();
-    sendResponse({ success: true, elements: results });
+    sendResponse({
+      success: true,
+      elements: results,
+      unscannable: scanner.lastScanMeta.unscannable,
+    });
+  }
+
+  if (request.action === 'getPageRecon') {
+    try {
+      const recon = scanner.getPageRecon();
+      sendResponse({ success: true, recon });
+    } catch (e) {
+      sendResponse({ success: false, message: String(e && e.message) });
+    }
+  }
+
+  if (request.action === 'extractPageSource') {
+    try {
+      const source = scanner.getPageSource();
+      sendResponse({ success: true, source });
+    } catch (e) {
+      sendResponse({ success: false, message: String(e && e.message) });
+    }
   }
 
   if (request.action === 'insertTestMarker') {

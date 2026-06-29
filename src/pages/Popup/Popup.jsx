@@ -31,18 +31,22 @@ const Popup = () => {
     }
   });
   const [ollamaUrl, setOllamaUrl] = useState('http://127.0.0.1:11434');
-  const [ollamaModel, setOllamaModel] = useState('llama3');
+  const [ollamaModel, setOllamaModel] = useState('llama3.2:1b');
   const [ollamaError, setOllamaError] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState('');
-  const [activeTab, setActiveTab] = useState('Scan'); // 'Scan' | 'Payloads' | 'History' | 'Settings'
+  const [activeTab, setActiveTab] = useState('Scan'); // 'Scan' | 'Payloads' | 'Recon' | 'History' | 'Settings'
   const [payloadHistory, setPayloadHistory] = useState([]);
+  const [recon, setRecon] = useState(null); // passive page recon snapshot
+  const [reconLoading, setReconLoading] = useState(false);
+  const [activeReconResult, setActiveReconResult] = useState(null); // result of active recon
+  const [unscannable, setUnscannable] = useState(null); // { crossOriginFrames }
   // Capture extension id for origin guidance
   const extensionId = chrome?.runtime?.id || '<extension-id>'; // used in 403 guidance/help text
 
   useEffect(() => {
     // Load settings from storage
     chrome.storage.local.get(['allowlist', 'dryRunMode', 'auditLog'], (result) => {
-  setAllowlist(result.allowlist || ['*']);
+      setAllowlist(result.allowlist || ['*']);
       setDryRunMode(result.dryRunMode !== undefined ? result.dryRunMode : true);
       setAuditLog(result.auditLog || []);
       setPayloadHistory(result.payloadHistory || []);
@@ -79,8 +83,8 @@ const Popup = () => {
   const isHostAllowed = (url) => {
     try {
       const hostname = new URL(url).hostname;
-  if (allowlist.includes('*')) return true;
-  return allowlist.some(allowed => hostname.includes(allowed));
+      if (allowlist.includes('*')) return true;
+      return allowlist.some(allowed => hostname.includes(allowed));
     } catch (e) {
       return false;
     }
@@ -95,7 +99,7 @@ const Popup = () => {
       result,
       dryRun: dryRunMode
     };
-    
+
     const newLog = [logEntry, ...auditLog].slice(0, 100); // Keep last 100 entries
     setAuditLog(newLog);
     chrome.storage.local.set({ auditLog: newLog });
@@ -151,9 +155,10 @@ const Popup = () => {
           setLoading(false);
           return;
         }
-        
+
         if (response && response.success) {
           setElements(response.elements);
+          setUnscannable(response.unscannable || null);
           addToAuditLog('SCAN', { count: response.elements.length }, 'SUCCESS');
         }
         setLoading(false);
@@ -161,6 +166,101 @@ const Popup = () => {
     } catch (error) {
       console.error('Scan error:', error);
       setLoading(false);
+    }
+  };
+
+  // Passive recon: ask the content script to read the loaded page (no requests).
+  const runRecon = async () => {
+    if (!isHostAllowed(currentUrl)) {
+      alert('⚠️ Current host is not in allowlist! Add it in settings first.');
+      return;
+    }
+    setReconLoading(true);
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const pingOk = await new Promise((resolve) => {
+        chrome.tabs.sendMessage(tab.id, { action: 'ping' }, (resp) => resolve(Boolean(resp && resp.ok)));
+        setTimeout(() => resolve(false), 500);
+      });
+      if (!pingOk) {
+        alert('Content script not available on this page. Try reloading the page.');
+        setReconLoading(false);
+        return;
+      }
+      chrome.tabs.sendMessage(tab.id, { action: 'getPageRecon' }, (response) => {
+        if (response && response.success) {
+          setRecon(response.recon);
+          addToAuditLog('PASSIVE_RECON', { endpoints: response.recon.endpoints?.length || 0 }, 'SUCCESS');
+        } else {
+          alert('❌ Recon failed: ' + (response?.message || 'unknown error'));
+        }
+        setReconLoading(false);
+      });
+    } catch (e) {
+      console.error('Recon error', e);
+      setReconLoading(false);
+    }
+  };
+
+  // Light active recon (background worker). Honors allowlist + dry-run + rate-limit.
+  const runActiveRecon = (includeDiscovered = false) => {
+    const endpoints = (recon && recon.endpoints) || [];
+    chrome.runtime.sendMessage(
+      { action: 'activeRecon', pageUrl: currentUrl, endpoints, includeDiscovered },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          alert('Error: ' + chrome.runtime.lastError.message);
+          return;
+        }
+        setActiveReconResult(response);
+        if (response && response.success && response.dryRun) {
+          alert(`🔒 DRY RUN: would fetch ${response.wouldFetch.length} URL(s). Disable Dry Run to execute.`);
+        } else if (response && !response.success) {
+          alert('❌ Active recon blocked: ' + (response.reason || 'unknown'));
+        }
+      }
+    );
+  };
+
+  const probeEndpoint = (endpoint) => {
+    chrome.runtime.sendMessage(
+      { action: 'probeEndpoint', pageUrl: currentUrl, endpoint },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          alert('Error: ' + chrome.runtime.lastError.message);
+          return;
+        }
+        if (response && response.success && response.dryRun) {
+          alert(`🔒 DRY RUN: would GET ${response.wouldFetch}`);
+        } else if (response && response.success) {
+          const r = response.result || {};
+          alert(`Probed ${r.url}\nStatus: ${r.status} ${r.ok ? '✅' : ''}`);
+        } else {
+          alert('❌ Probe blocked: ' + (response?.reason || 'unknown'));
+        }
+      }
+    );
+  };
+
+  // Export full page source / DOM snapshot for offline analysis.
+  const exportPageSource = async () => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      chrome.tabs.sendMessage(tab.id, { action: 'extractPageSource' }, (response) => {
+        if (response && response.success) {
+          const blob = new Blob([JSON.stringify(response.source, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `page_source_${Date.now()}.json`;
+          link.click();
+          addToAuditLog('EXPORT_PAGE_SOURCE', { url: response.source.url }, 'SUCCESS');
+        } else {
+          alert('❌ Could not capture page source');
+        }
+      });
+    } catch (e) {
+      alert('Export failed: ' + e.message);
     }
   };
 
@@ -196,7 +296,7 @@ const Popup = () => {
     reader.onerror = reject;
     reader.readAsText(file);
   });
-  
+
   const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -250,9 +350,9 @@ const Popup = () => {
       setLlmPayload(suggestion.payload || '');
       setPayloadSource('llm');
     } catch (e) {
-  const msg = ollama?.getLastError?.() || e?.message || 'LLM not available or failed to generate.';
-  alert(msg);
-  setOllamaError(msg);
+      const msg = ollama?.getLastError?.() || e?.message || 'LLM not available or failed to generate.';
+      alert(msg);
+      setOllamaError(msg);
     } finally {
       setLlmLoading(false);
     }
@@ -442,6 +542,7 @@ const Popup = () => {
       <div className="tab-nav">
         <button className={"tab" + (activeTab === 'Scan' ? ' active' : '')} onClick={() => setActiveTab('Scan')}>🔍 Scan</button>
         <button className={"tab" + (activeTab === 'Payloads' ? ' active' : '')} onClick={() => setActiveTab('Payloads')}>🧰 Payloads</button>
+        <button className={"tab" + (activeTab === 'Recon' ? ' active' : '')} onClick={() => setActiveTab('Recon')}>🛰️ Recon</button>
         <button className={"tab" + (activeTab === 'History' ? ' active' : '')} onClick={() => setActiveTab('History')}>📜 History</button>
         <button className={"tab" + (activeTab === 'Settings' ? ' active' : '')} onClick={() => setActiveTab('Settings')}>⚙️ Settings</button>
       </div>
@@ -470,9 +571,9 @@ const Popup = () => {
           <div className="elements-list">
             {elements.length > 0 && (
               <div className="stats">
-                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>Found {elements.length} form elements</div>
-                  <div style={{display: 'flex', gap: 8}}>
+                  <div style={{ display: 'flex', gap: 8 }}>
                     <button className="btn-small" onClick={selectAll}>Select all</button>
                     <button className="btn-small" onClick={clearSelection}>Clear</button>
                     <button className="btn-small" onClick={selectFilesOnly}>Select files</button>
@@ -486,7 +587,7 @@ const Popup = () => {
                 <div className="element-header">
                   <input
                     type="checkbox"
-                    style={{marginRight: 8}}
+                    style={{ marginRight: 8 }}
                     checked={selectedIds && selectedIds.has && selectedIds.has(element.uniqueId)}
                     onChange={() => toggleSelection(element.uniqueId)}
                     title="Select this field for payloads/attachments"
@@ -496,15 +597,32 @@ const Popup = () => {
                   <span className="element-name">{element.name || 'unnamed'}</span>
                 </div>
 
+                {element.tags && element.tags.length > 0 && (
+                  <div className="tag-row">
+                    {element.tags.map((t) => (
+                      <span key={t} className={'tag tag-' + t}>{t}</span>
+                    ))}
+                  </div>
+                )}
+
                 <div className="element-details">
                   {element.subType && <div>Type: {element.subType}</div>}
                   {element.id && <div>ID: {element.id}</div>}
+                  {element.context && element.context !== 'light' && <div>Context: {element.context}</div>}
+                  {element.formMethod && <div>Form: {element.formMethod.toUpperCase()} {element.formAction || '(self)'}</div>}
                   {element.placeholder && <div>Placeholder: {element.placeholder}</div>}
+                  {element.maxlength != null && <div>Maxlength: {element.maxlength}</div>}
+                  {element.pattern && <div>Pattern: <code>{element.pattern}</code></div>}
                   {element.required && <div className="badge-required">Required</div>}
                 </div>
               </div>
             ))}
           </div>
+          {unscannable && unscannable.crossOriginFrames > 0 && (
+            <div className="hint">
+              ⚠️ {unscannable.crossOriginFrames} cross-origin frame(s) could not be scanned.
+            </div>
+          )}
         </div>
       )}
 
@@ -512,80 +630,165 @@ const Popup = () => {
         <div className="payload-sources">
           <h3>Payload Source</h3>
           <div className="source-options">
-          <label>
-            <input
-              type="radio"
-              name="payloadSource"
-              value="library"
-              checked={payloadSource === 'library'}
-              onChange={(e) => setPayloadSource(e.target.value)}
-            />
-            Use Preset Payloads (selected attack)
-          </label>
-          <label>
-            <input
-              type="radio"
-              name="payloadSource"
-              value="file"
-              checked={payloadSource === 'file'}
-              onChange={(e) => setPayloadSource(e.target.value)}
-            />
-            Upload custom payload file (any type)
-          </label>
-          {/* accept any file type for greater flexibility */}
-          <input type="file" accept="*/*" onChange={onFileChange} disabled={payloadSource !== 'file'} />
-          {fileName && (
-            <div className="file-preview">Selected file: <code>{fileName}</code></div>
-          )}
+            <label>
+              <input
+                type="radio"
+                name="payloadSource"
+                value="library"
+                checked={payloadSource === 'library'}
+                onChange={(e) => setPayloadSource(e.target.value)}
+              />
+              Use Preset Payloads (selected attack)
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="payloadSource"
+                value="file"
+                checked={payloadSource === 'file'}
+                onChange={(e) => setPayloadSource(e.target.value)}
+              />
+              Upload custom payload file (any type)
+            </label>
+            {/* accept any file type for greater flexibility */}
+            <input type="file" accept="*/*" onChange={onFileChange} disabled={payloadSource !== 'file'} />
+            {fileName && (
+              <div className="file-preview">Selected file: <code>{fileName}</code></div>
+            )}
 
-          <label>
-            <input
-              type="radio"
-              name="payloadSource"
-              value="text"
-              checked={payloadSource === 'text'}
-              onChange={(e) => setPayloadSource(e.target.value)}
-            />
-            Type payload(s) (one per line)
-          </label>
-          <textarea
-            rows={3}
-            placeholder="<script>alert(1)</script>\n' OR '1'='1"
-            value={textPayload}
-            onChange={(e) => setTextPayload(e.target.value)}
-            disabled={payloadSource !== 'text'}
-          />
-
-          <label title={ollamaAvailable ? 'Ollama detected on 127.0.0.1:11434' : 'Start Ollama: `ollama serve` and ensure a model like llama3 is pulled'}>
-            <input
-              type="radio"
-              name="payloadSource"
-              value="llm"
-              checked={payloadSource === 'llm'}
-              onChange={(e) => setPayloadSource(e.target.value)}
-              disabled={!ollamaAvailable}
-            />
-            LLM suggestion {ollamaAvailable ? '' : '(Ollama not available)'}
-          </label>
-          <div className="llm-row">
-            <button className="btn-small" onClick={fetchLlmSuggestion} disabled={!ollamaAvailable || llmLoading}>
-              {llmLoading ? '⏳ Generating…' : '✨ Generate with LLM'}
-            </button>
+            <label>
+              <input
+                type="radio"
+                name="payloadSource"
+                value="text"
+                checked={payloadSource === 'text'}
+                onChange={(e) => setPayloadSource(e.target.value)}
+              />
+              Type payload(s) (one per line)
+            </label>
             <textarea
-              rows={2}
-              placeholder="Generated payload will appear here"
-              value={llmPayload}
-              readOnly
+              rows={3}
+              placeholder="<script>alert(1)</script>\n' OR '1'='1"
+              value={textPayload}
+              onChange={(e) => setTextPayload(e.target.value)}
+              disabled={payloadSource !== 'text'}
             />
+
+            <label title={ollamaAvailable ? 'Ollama detected on 127.0.0.1:11434' : 'Start Ollama: `ollama serve` and ensure a model like llama3 is pulled'}>
+              <input
+                type="radio"
+                name="payloadSource"
+                value="llm"
+                checked={payloadSource === 'llm'}
+                onChange={(e) => setPayloadSource(e.target.value)}
+                disabled={!ollamaAvailable}
+              />
+              LLM suggestion {ollamaAvailable ? '' : '(Ollama not available)'}
+            </label>
+            <div className="llm-row">
+              <button className="btn-small" onClick={fetchLlmSuggestion} disabled={!ollamaAvailable || llmLoading}>
+                {llmLoading ? '⏳ Generating…' : '✨ Generate with LLM'}
+              </button>
+              <textarea
+                rows={2}
+                placeholder="Generated payload will appear here"
+                value={llmPayload}
+                readOnly
+              />
+            </div>
+            {!ollamaAvailable && (
+              <div className="llm-hint">
+                Ollama not reachable at {ollamaUrl}. Ensure "ollama serve" is running and a model (e.g., {ollamaModel}) is pulled.
+                {ollamaError && <div className="llm-error">Last error: {ollamaError}</div>}
+              </div>
+            )}
           </div>
-          {!ollamaAvailable && (
-            <div className="llm-hint">
-              Ollama not reachable at {ollamaUrl}. Ensure "ollama serve" is running and a model (e.g., {ollamaModel}) is pulled.
-              {ollamaError && <div className="llm-error">Last error: {ollamaError}</div>}
+        </div>
+      )}
+
+      {activeTab === 'Recon' && (
+        <div className="recon-panel">
+          <h3>🛰️ Page Recon</h3>
+          <div className="controls">
+            <button onClick={runRecon} disabled={reconLoading} className="btn-primary">
+              {reconLoading ? '⏳ Reading…' : '🔎 Run Passive Recon'}
+            </button>
+            <button onClick={exportPageSource} className="btn-secondary">📥 Export Page Source</button>
+          </div>
+
+          {!recon && <div className="hint">Run passive recon to read the loaded page (no requests sent).</div>}
+
+          {recon && (
+            <div className="recon-results">
+              <div className="recon-section">
+                <h4>Overview</h4>
+                <div className="muted">Title: {recon.title || '(none)'}</div>
+                {recon.frameworks?.length > 0 && (
+                  <div>Frameworks: {recon.frameworks.map((f) => <span key={f} className="tag tag-fw">{f}</span>)}</div>
+                )}
+                <div className="muted">Forms: {recon.forms?.length || 0} · Links: {recon.links?.length || 0} · Buttons: {recon.buttonCount || 0}</div>
+              </div>
+
+              {recon.forms?.length > 0 && (
+                <div className="recon-section">
+                  <h4>Forms</h4>
+                  {recon.forms.map((f, i) => (
+                    <div key={i} className="muted">{f.method.toUpperCase()} {f.action || '(self)'} — {f.fieldCount} field(s)</div>
+                  ))}
+                </div>
+              )}
+
+              {(recon.cookieNames?.length > 0 || recon.localStorageKeys?.length > 0 || recon.sessionStorageKeys?.length > 0) && (
+                <div className="recon-section">
+                  <h4>Storage (names only)</h4>
+                  {recon.cookieNames?.length > 0 && <div className="muted">Cookies: {recon.cookieNames.join(', ')}</div>}
+                  {recon.localStorageKeys?.length > 0 && <div className="muted">localStorage: {recon.localStorageKeys.join(', ')}</div>}
+                  {recon.sessionStorageKeys?.length > 0 && <div className="muted">sessionStorage: {recon.sessionStorageKeys.join(', ')}</div>}
+                </div>
+              )}
+
+              {recon.comments?.length > 0 && (
+                <div className="recon-section">
+                  <h4>HTML Comments ({recon.comments.length})</h4>
+                  <pre className="history-payload">{recon.comments.slice(0, 10).join('\n')}</pre>
+                </div>
+              )}
+
+              <div className="recon-section">
+                <h4>Discovered Endpoints ({recon.endpoints?.length || 0})</h4>
+                {(!recon.endpoints || recon.endpoints.length === 0) && <div className="muted">None found in inline scripts.</div>}
+                {recon.endpoints?.map((ep, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <code style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{ep}</code>
+                    <button className="btn-small" onClick={() => probeEndpoint(ep)}>Probe</button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="recon-section">
+                <h4>Active Recon</h4>
+                <p style={{ fontSize: 12, margin: '4px 0 8px' }}>
+                  Fetches robots.txt, sitemap.xml, security.txt. Honors allowlist, dry-run and rate limits.
+                </p>
+                <button className="btn-secondary" onClick={() => runActiveRecon(false)}>🌐 Fetch Recon Files</button>
+                {activeReconResult && activeReconResult.results && (
+                  <div className="recon-section">
+                    {activeReconResult.results.map((r, i) => (
+                      <div key={i} className="muted">{r.status || '—'} {r.url} {r.error ? `(${r.error})` : ''}</div>
+                    ))}
+                  </div>
+                )}
+                {activeReconResult && activeReconResult.dryRun && (
+                  <div className="recon-section">
+                    {activeReconResult.wouldFetch.map((u, i) => (
+                      <div key={i} className="muted">🔒 would fetch: {u}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
-      </div>
       )}
 
       {activeTab === 'History' && (
@@ -597,19 +800,19 @@ const Popup = () => {
             <div className="history-list">
               {payloadHistory.map((h, idx) => (
                 <div key={idx} className="history-item">
-                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                       <strong>{h.vuln || 'custom'}</strong>
                       <div className="muted">{new Date(h.timestamp).toLocaleString()}</div>
                       <div className="muted">Source: {h.payloadSource}</div>
                     </div>
-                    <div style={{display:'flex', gap:8}}>
+                    <div style={{ display: 'flex', gap: 8 }}>
                       <button className="btn-small" onClick={() => insertHistoryEntry(h)}>Insert</button>
                       <button className="btn-small" onClick={() => copyHistoryEntry(h)}>Copy</button>
                       <button className="btn-remove" onClick={() => deleteHistoryEntry(idx)}>Delete</button>
                     </div>
                   </div>
-                  <pre className="history-payload">{(h.payloads || []).slice(0,5).join('\n')}</pre>
+                  <pre className="history-payload">{(h.payloads || []).slice(0, 5).join('\n')}</pre>
                 </div>
               ))}
             </div>
@@ -620,7 +823,7 @@ const Popup = () => {
       {activeTab === 'Settings' && (
         <div className="settings-panel">
           <h3>⚙️ Settings</h3>
-          
+
           <div className="setting-item">
             <label>
               <input
@@ -673,7 +876,7 @@ const Popup = () => {
                 type="text"
                 value={ollamaModel}
                 onChange={(e) => setOllamaModel(e.target.value)}
-                placeholder="llama3"
+                placeholder="llama3.2:1b"
               />
               <button
                 className="btn-small"
@@ -694,58 +897,33 @@ const Popup = () => {
               <div className="llm-ok">{ollamaStatus}</div>
             )}
             {!ollamaAvailable && ollamaError && (
-                <div className="llm-error">
-                  {ollamaError}
-                  {ollamaError.includes('403') && (
-                    <div style={{marginTop:6, fontSize:12, lineHeight:1.4}}>
-                      <strong>403 Forbidden:</strong> Ollama rejected the extension origin.<br/>
-                      Fix A (recommended): Restart Ollama with an origin allowlist including <code>chrome-extension://{extensionId}</code><br/>
-                      <code style={{display:'block',whiteSpace:'pre-wrap',background:'#eef2ff',padding:'4px 6px',borderRadius:4,marginTop:4}}>
-  {`# Example (macOS/Linux shell):
+              <div className="llm-error">
+                {ollamaError}
+                {ollamaError.includes('403') && (
+                  <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.4 }}>
+                    <strong>403 Forbidden:</strong> Ollama rejected the extension origin.<br />
+                    Fix A (recommended): Restart Ollama with an origin allowlist including <code>chrome-extension://{extensionId}</code><br />
+                    <code style={{ display: 'block', whiteSpace: 'pre-wrap', background: '#eef2ff', padding: '4px 6px', borderRadius: 4, marginTop: 4 }}>
+                      {`# Example (macOS/Linux shell):
   export OLLAMA_ORIGINS='http://127.0.0.1 http://localhost chrome-extension://${extensionId}'
   ollama serve`}
-                      </code>
-                      Fix B: Use the local proxy (see below) and set base URL to <code>http://127.0.0.1:5000</code>.
-                    </div>
-                  )}
-                </div>
+                    </code>
+                    Fix B: Use the local proxy (see below) and set base URL to <code>http://127.0.0.1:5000</code>.
+                  </div>
+                )}
+              </div>
             )}
             {/* Proxy helper guidance */}
-            <div style={{marginTop:16}}>
-              <h4 style={{margin:'8px 0'}}>Proxy Workaround</h4>
-              <p style={{fontSize:12, margin:'4px 0 8px'}}>If you cannot modify Ollama origins, run the provided proxy (scripts/ollama-proxy.js) then set Base URL to <code>http://127.0.0.1:5000</code>. It strips the Origin header so POST /api/generate succeeds.</p>
+            <div style={{ marginTop: 16 }}>
+              <h4 style={{ margin: '8px 0' }}>Proxy Workaround</h4>
+              <p style={{ fontSize: 12, margin: '4px 0 8px' }}>If you cannot modify Ollama origins, run the provided proxy (scripts/ollama-proxy.js) then set Base URL to <code>http://127.0.0.1:5000</code>. It strips the Origin header so POST /api/generate succeeds.</p>
               {ollamaError.includes('403') && (
-                <p style={{fontSize:12, color:'#b00020'}}>403 detected – proxy workaround is available. See project scripts folder.</p>
+                <p style={{ fontSize: 12, color: '#b00020' }}>403 detected – proxy workaround is available. See project scripts folder.</p>
               )}
             </div>
           </div>
         </div>
       )}
-
-  <div className="elements-list">
-        {elements.length > 0 && (
-          <div className="stats">
-            Found {elements.length} form elements
-          </div>
-        )}
-
-        {elements.map((element, idx) => (
-          <div key={idx} className="element-card">
-            <div className="element-header">
-              <span className="element-icon">{getElementIcon(element.type)}</span>
-              <span className="element-type">{element.type}</span>
-              <span className="element-name">{element.name || 'unnamed'}</span>
-            </div>
-            
-            <div className="element-details">
-              {element.subType && <div>Type: {element.subType}</div>}
-              {element.id && <div>ID: {element.id}</div>}
-              {element.placeholder && <div>Placeholder: {element.placeholder}</div>}
-              {element.required && <div className="badge-required">Required</div>}
-            </div>
-          </div>
-        ))}
-      </div>
 
       {confirmAction && (
         <div className="modal-overlay">
