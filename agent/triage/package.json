@@ -1,0 +1,15 @@
+{
+  "name": "bugbounty-triage-agent",
+  "version": "1.0.0",
+  "description": "Claude-powered recon/triage brain that drives the scope-gated companion agent. Produces ranked drafts; the human validates and submits.",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node runner.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.0"
+  }
+}

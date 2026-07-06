@@ -1239,6 +1239,35 @@ body {
   animation: fadeIn 0.15s ease;
 }
 
+/* ─── Toasts ─────────────────────────────────────────────────────── */
+/* Fixed + above the modal (z 1000) so feedback is visible even over a panel. */
+.toast-stack {
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 2000;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  animation: fadeIn 0.15s ease;
+  word-break: break-word;
+}
+.toast-info { background: #2563eb; }
+.toast-success { background: #16a34a; }
+.toast-error { background: #dc2626; }
+
 .modal {
   background: var(--card);
   border: 1px solid var(--bd-md);
@@ -1549,3 +1578,217 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Checklist (methodology) ─────────────────────────────── */
+.checklist-panel { padding: 4px 2px 12px; }
+.checklist-head {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.checklist-head h3 { display: flex; align-items: center; gap: 6px; margin: 0; }
+.checklist-sub { font-size: 11px; color: var(--fg-2); margin: 6px 0 10px; }
+.checklist-sub code { color: var(--fg); }
+
+.checklist-progress { margin-bottom: 12px; }
+.checklist-bar {
+  height: 6px; border-radius: var(--r-pill);
+  background: var(--muted); overflow: hidden;
+}
+.checklist-bar-fill {
+  height: 100%; background: var(--accent);
+  border-radius: var(--r-pill); transition: width 0.2s ease;
+}
+.checklist-progress-meta {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; margin-top: 4px;
+}
+
+.checklist-cat { margin-bottom: 6px; }
+.checklist-cat-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 8px; text-align: left; cursor: pointer;
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+  font-size: 12px; font-weight: 600;
+}
+.checklist-cat-head:hover { background: var(--card-hover); }
+.checklist-cat-caret { color: var(--fg-3); width: 10px; }
+.checklist-cat-name { flex: 1; }
+.checklist-cat-count { font-weight: 400; font-size: 11px; }
+
+.checklist-items { padding: 6px 2px 2px; }
+.checklist-item {
+  padding: 7px 8px; margin-bottom: 5px;
+  background: var(--surface);
+  border: 1px solid var(--bd-md);
+  border-left: 3px solid var(--fg-off);
+  border-radius: var(--r-sm);
+}
+.checklist-item-testing { border-left-color: var(--blue); }
+.checklist-item-pass    { border-left-color: var(--accent); }
+.checklist-item-finding { border-left-color: var(--warn); background: var(--warn-10); }
+.checklist-item-na      { border-left-color: var(--fg-off); opacity: 0.6; }
+
+.checklist-item-top { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.checklist-ref {
+  font-family: var(--mono, monospace); font-size: 10px;
+  color: var(--fg-3); white-space: nowrap;
+}
+.checklist-title { flex: 1; font-size: 12px; color: var(--fg); min-width: 140px; }
+.checklist-payload { padding: 2px 7px; font-size: 10px; }
+
+.checklist-states { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.checklist-state-btn {
+  padding: 3px 8px; font-size: 10px; cursor: pointer;
+  background: transparent; color: var(--fg-2);
+  border: 1px solid var(--bd-md); border-radius: var(--r-pill);
+}
+.checklist-state-btn:hover { border-color: var(--bd-strong); color: var(--fg); }
+.checklist-state-btn.active { color: #fff; font-weight: 600; }
+.checklist-state-btn.checklist-state-testing.active { background: var(--blue);   border-color: var(--blue); }
+.checklist-state-btn.checklist-state-pass.active    { background: var(--accent); border-color: var(--accent); }
+.checklist-state-btn.checklist-state-finding.active { background: var(--warn);   border-color: var(--warn); }
+.checklist-state-btn.checklist-state-todo.active    { background: var(--fg-off); border-color: var(--fg-off); }
+.checklist-state-btn.checklist-state-na.active      { background: var(--fg-3);   border-color: var(--fg-3); }
+
+/* ── Scope editor (Config) ───────────────────────────────── */
+.scope-help { font-size: 11px; color: var(--fg-2); margin: 2px 0 8px; }
+.scope-help code { margin: 0 2px; }
+.scope-label { display: block; font-size: 11px; font-weight: 600; color: var(--fg-2); margin: 6px 0 3px; }
+.scope-textarea {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font-family: var(--mono, monospace); font-size: 12px;
+  padding: 6px 8px; margin-bottom: 4px;
+  background: var(--surface); color: var(--fg);
+  border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.scope-current { font-size: 11px; margin-top: 8px; }
+
+/* ── Site inventory (Recon) ──────────────────────────────── */
+.inventory-section {
+  padding: 8px; margin-bottom: 12px;
+  background: var(--card); border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.inv-stats { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.inv-stat {
+  flex: 1 1 60px; text-align: center; padding: 6px 4px;
+  background: var(--surface); border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.inv-stat-num { display: block; font-size: 16px; font-weight: 700; color: var(--accent); }
+.inv-stat-label { display: block; font-size: 10px; color: var(--fg-2); }
+.inv-details { margin-top: 6px; font-size: 12px; }
+.inv-details summary { cursor: pointer; color: var(--fg-2); padding: 3px 0; }
+.inv-details summary:hover { color: var(--fg); }
+.inv-list { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; max-height: 220px; overflow: auto; }
+.inv-list-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; padding: 2px 0;
+}
+.inv-list-item code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Report builder modal ────────────────────────────────── */
+.report-modal { width: 640px; max-width: 94vw; max-height: 88vh; overflow: auto; text-align: left; }
+.report-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.report-form { display: flex; flex-direction: column; gap: 6px; }
+.report-form label { display: flex; flex-direction: column; font-size: 11px; font-weight: 600; color: var(--fg-2); gap: 3px; }
+.report-form input, .report-form select, .report-form textarea {
+  font-size: 12px; font-weight: 400; padding: 5px 7px;
+  background: var(--surface); color: var(--fg);
+  border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.report-form textarea { resize: vertical; font-family: inherit; }
+.report-preview { display: flex; flex-direction: column; min-width: 0; }
+.report-preview-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.report-md {
+  flex: 1; margin: 0; padding: 8px; overflow: auto; max-height: 60vh;
+  font-family: var(--mono, monospace); font-size: 11px; line-height: 1.45;
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--surface); color: var(--fg);
+  border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.report-foot { font-size: 10px; margin-top: 8px; }
+.checklist-report { padding: 2px 7px; font-size: 10px; }
+
+@media (max-width: 560px) {
+  .report-grid { grid-template-columns: 1fr; }
+}
+
+/* ── JS change monitor (Recon) ───────────────────────────── */
+.jswatch-list { margin-top: 6px; }
+.jswatch-entry { padding: 6px 0; border-top: 1px solid var(--bd-md); }
+.jswatch-diff { margin: 4px 0 4px 4px; font-size: 12px; }
+.jswatch-ep {
+  display: flex; align-items: center; gap: 8px;
+  margin-left: 8px; font-size: 11px; color: var(--accent);
+}
+.jswatch-ep code { color: var(--fg); }
+.jswatch-secret { margin-left: 8px; font-size: 11px; color: var(--warn); }
+
+/* ── Programs / payouts tab ──────────────────────────────── */
+.programs-panel { padding: 4px 2px 12px; }
+.programs-panel h3 { display: flex; align-items: center; gap: 6px; }
+.prog-form {
+  margin: 10px 0; padding: 8px;
+  background: var(--card); border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.prog-form h4 { margin: 0 0 6px; font-size: 12px; }
+.prog-form-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.prog-form-row input, .prog-form-row select {
+  flex: 1; min-width: 0; font-size: 12px; padding: 5px 7px;
+  background: var(--surface); color: var(--fg);
+  border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.prog-list { margin-top: 10px; }
+.prog-list h4 { margin: 0 0 6px; font-size: 12px; }
+.prog-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px; margin-bottom: 5px;
+  background: var(--surface); border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.prog-item-main { flex: 1; min-width: 0; }
+.sub-state {
+  font-size: 11px; padding: 3px 6px;
+  background: var(--muted); color: var(--fg-2);
+  border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+
+/* ── Companion agent (Phase 3) ───────────────────────────── */
+.agent-runner { display: flex; gap: 6px; margin: 6px 0; }
+.agent-runner select {
+  flex: 1; min-width: 0; font-size: 12px; padding: 5px 6px;
+  background: var(--surface); color: var(--fg);
+  border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.agent-result { margin-top: 6px; max-height: 260px; overflow: auto; }
+.agent-line { font-size: 11px; padding: 2px 0; border-top: 1px solid var(--bd-md); }
+.agent-line code { color: var(--fg); }
+.agent-finding {
+  padding: 4px 6px; margin: 3px 0; font-size: 12px;
+  border-left: 3px solid var(--fg-off); border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.agent-finding.sev-critical, .agent-finding.sev-high { border-left-color: var(--danger); }
+.agent-finding.sev-medium { border-left-color: var(--warn); }
+.agent-finding.sev-low, .agent-finding.sev-info { border-left-color: var(--blue); }
+.sev-badge {
+  display: inline-block; font-size: 9px; text-transform: uppercase;
+  padding: 1px 5px; border-radius: var(--r-pill);
+  background: var(--muted); color: var(--fg-2);
+}
+.agent-input {
+  width: 100%; box-sizing: border-box; font-size: 12px; padding: 5px 7px; margin-bottom: 4px;
+  font-family: var(--mono, monospace);
+  background: var(--surface); color: var(--fg);
+  border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.agent-health { margin-top: 8px; }
+.agent-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.tag-off { opacity: 0.5; }
+
+/* ── Scheduled watches (Phase 4) ─────────────────────────── */
+.watches-block { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--bd-md); }
+.watch-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; margin-bottom: 4px;
+  background: var(--surface); border: 1px solid var(--bd-md); border-radius: var(--r-sm);
+}
+.watch-main { flex: 1; min-width: 0; }

@@ -1,0 +1,8 @@
+node_modules
+test
+data
+*.log
+.env
+.git
+.DS_Store
+README.md

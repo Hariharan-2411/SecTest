@@ -26,3 +26,11 @@ secrets.*.js
 /venv
 
 /chrome-boiler.zip
+
+# env secrets (any location)
+.env
+**/.env
+!.env.example
+
+# agent runtime data
+agent/data/

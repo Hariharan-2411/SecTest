@@ -69,6 +69,51 @@ export async function chat(messages, model = DEFAULT_MODEL) {
   return data.reply || '';
 }
 
+// Triage: ask the model whether a captured request/response evidences a bug.
+// Returns a conservative verdict — the human still confirms.
+export async function classifyResponse({ request, response, context } = {}, model = DEFAULT_MODEL) {
+  const data = await callEdge('', {
+    method: 'POST',
+    body: { mode: 'triage', request, response, context, model },
+  });
+  return {
+    likelyVuln: !!data.likelyVuln,
+    severity: data.severity || 'informational',
+    reason: data.reason || '',
+    model: data.model || model,
+  };
+}
+
+// Draft report prose (summary/steps/impact/remediation) from evidence. It only
+// formats what you pass — it must not invent facts beyond the evidence.
+export async function draftFinding(evidence, model = DEFAULT_MODEL) {
+  const data = await callEdge('', {
+    method: 'POST',
+    body: { mode: 'report', evidence, model },
+  });
+  return {
+    summary: data.summary || '',
+    steps: Array.isArray(data.steps) ? data.steps : [],
+    impact: data.impact || '',
+    remediation: data.remediation || '',
+    model: data.model || model,
+  };
+}
+
+// Escalation planner: given a finding + compact grounded context, ask the model
+// for concrete next tests. Returns the RAW steps — the caller MUST run them
+// through escalation.normalizePlan (allowlist + scope re-check) before use.
+export async function escalateFinding(finding, context, model = DEFAULT_MODEL) {
+  const data = await callEdge('', {
+    method: 'POST',
+    body: { mode: 'escalate', finding, context, model },
+  });
+  return {
+    steps: Array.isArray(data.steps) ? data.steps : [],
+    model: data.model || model,
+  };
+}
+
 export async function listModels() {
   const data = await callEdge('/models', { method: 'GET' });
   return Array.isArray(data.models) ? data.models : [];

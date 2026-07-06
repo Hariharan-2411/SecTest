@@ -59,6 +59,65 @@ describe('aiProvider', () => {
     expect(reply).toBe('That payload triggers XSS…');
   });
 
+  it('classifyResponse posts mode=triage and normalizes the verdict', async () => {
+    global.fetch.mockResolvedValue(okJson({ likelyVuln: true, severity: 'high', reason: 'true/false diverged', model: 'm' }));
+    const out = await ai.classifyResponse(
+      { request: 'GET /?id=1', response: '500/…', context: { type: 'sqli' } },
+      'llama-3.3-70b-versatile'
+    );
+    const [url, opts] = global.fetch.mock.calls[0];
+    expect(url).toBe('https://proj.supabase.co/functions/v1/groq-proxy');
+    expect(JSON.parse(opts.body)).toEqual({
+      mode: 'triage',
+      request: 'GET /?id=1',
+      response: '500/…',
+      context: { type: 'sqli' },
+      model: 'llama-3.3-70b-versatile',
+    });
+    expect(out).toMatchObject({ likelyVuln: true, severity: 'high', reason: 'true/false diverged' });
+  });
+
+  it('classifyResponse defaults a missing verdict conservatively', async () => {
+    global.fetch.mockResolvedValue(okJson({}));
+    const out = await ai.classifyResponse({}, 'm');
+    expect(out).toMatchObject({ likelyVuln: false, severity: 'informational', reason: '' });
+  });
+
+  it('draftFinding posts mode=report and returns the drafted sections', async () => {
+    global.fetch.mockResolvedValue(okJson({ summary: 'S', steps: ['a', 'b'], impact: 'I', remediation: 'R' }));
+    const out = await ai.draftFinding('evidence blob', 'llama-3.3-70b-versatile');
+    const [, opts] = global.fetch.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({ mode: 'report', evidence: 'evidence blob', model: 'llama-3.3-70b-versatile' });
+    expect(out).toMatchObject({ summary: 'S', steps: ['a', 'b'], impact: 'I', remediation: 'R' });
+  });
+
+  it('draftFinding coerces a non-array steps field to []', async () => {
+    global.fetch.mockResolvedValue(okJson({ summary: 'S', steps: 'oops' }));
+    const out = await ai.draftFinding('e', 'm');
+    expect(out.steps).toEqual([]);
+  });
+
+  it('escalateFinding posts mode=escalate and returns the raw steps', async () => {
+    global.fetch.mockResolvedValue(okJson({ steps: [{ type: 'differential_probe', target: 'https://x/?id=1' }], model: 'm' }));
+    const out = await ai.escalateFinding(
+      { id: 'f1', type: 'sqli-boolean', host: 'x.com' },
+      { host: 'x.com', inventory: { endpoints: [] } },
+      'llama-3.3-70b-versatile'
+    );
+    const [, opts] = global.fetch.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.mode).toBe('escalate');
+    expect(body.finding).toMatchObject({ id: 'f1' });
+    expect(body.context).toMatchObject({ host: 'x.com' });
+    expect(out.steps).toEqual([{ type: 'differential_probe', target: 'https://x/?id=1' }]);
+  });
+
+  it('escalateFinding defaults steps to [] when the proxy omits them', async () => {
+    global.fetch.mockResolvedValue(okJson({}));
+    const out = await ai.escalateFinding({}, {}, 'm');
+    expect(out.steps).toEqual([]);
+  });
+
   it('listModels GETs /models and returns the id array', async () => {
     global.fetch.mockResolvedValue(okJson({ models: ['llama-3.3-70b-versatile', 'gemma2-9b-it'] }));
     const ids = await ai.listModels();

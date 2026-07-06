@@ -1,0 +1,14 @@
+{
+  "name": "bugbounty-companion-agent",
+  "version": "1.0.0",
+  "description": "Scope-gated recon tool-runner for the bug-bounty extension. Zero runtime dependencies.",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -5,6 +5,9 @@
 // the page, so it can be unit-tested under jsdom and reused by the content
 // script. Functions take DOM elements / documents and return plain objects.
 
+import { findSecrets } from './secrets';
+import { mapSinks } from './sinks';
+
 /**
  * Resolve a human-readable label for a form field, trying the most reliable
  * sources first:
@@ -419,6 +422,21 @@ export function findInlineEndpoints(source) {
   return Array.from(found);
 }
 
+/**
+ * Analyze a blob of script text for all passive signals at once: candidate
+ * endpoints, likely secrets (masked), and DOM-XSS sinks. Shared by the passive
+ * page recon (inline scripts) and the deep-JS scan (external same-origin
+ * scripts) so both surface the same signal set. Pure — fetches nothing.
+ */
+export function analyzeScriptSource(source) {
+  const src = typeof source === 'string' ? source : '';
+  return {
+    endpoints: findInlineEndpoints(src),
+    secrets: findSecrets(src),
+    sinks: mapSinks(src),
+  };
+}
+
 // Framework detection: window globals + script-src filename hints.
 const FRAMEWORK_GLOBALS = [
   ['React', 'React'],
@@ -518,6 +536,8 @@ export function extractPageRecon({ documentRef, windowRef = {} } = {}) {
     meta: {},
     comments: [],
     endpoints: [],
+    secrets: [],
+    sinks: [],
     forms: [],
     links: [],
     buttonCount: 0,
@@ -548,10 +568,18 @@ export function extractPageRecon({ documentRef, windowRef = {} } = {}) {
     scripts = Array.from(doc.querySelectorAll('script:not([src])'));
   } catch (_) {}
   const endpointSet = new Set();
+  const secretKeys = new Set();
   for (const s of scripts) {
-    for (const ep of findInlineEndpoints(s.textContent || '')) {
-      endpointSet.add(ep);
+    const { endpoints, secrets, sinks } = analyzeScriptSource(s.textContent || '');
+    for (const ep of endpoints) endpointSet.add(ep);
+    for (const sec of secrets) {
+      const key = sec.type + ':' + sec.preview;
+      if (!secretKeys.has(key)) {
+        secretKeys.add(key);
+        recon.secrets.push(sec);
+      }
     }
+    for (const sink of sinks) recon.sinks.push(sink);
   }
   recon.endpoints = Array.from(endpointSet);
 

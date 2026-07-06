@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SecTest Pro — Learn &amp; Practice Page</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #171a23;
+    --panel-2: #1e222e;
+    --border: #2a2f3d;
+    --text: #e6e8ee;
+    --muted: #9aa3b2;
+    --accent: #7c5cff;
+    --accent-2: #35d0a5;
+    --warn: #ffb020;
+    --danger: #ff5c7c;
+    --code-bg: #10131b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+  }
+  a { color: var(--accent-2); }
+  code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 0.85em;
+  }
+  header.hero {
+    padding: 40px 24px 28px;
+    background: radial-gradient(1200px 400px at 20% -10%, rgba(124,92,255,.35), transparent),
+                radial-gradient(900px 400px at 90% -20%, rgba(53,208,165,.25), transparent);
+    border-bottom: 1px solid var(--border);
+  }
+  .hero-inner { max-width: 1180px; margin: 0 auto; }
+  .hero h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: -.5px; }
+  .hero p { margin: 4px 0; color: var(--muted); max-width: 720px; }
+  .badge {
+    display: inline-block; font-size: 12px; font-weight: 600;
+    padding: 3px 10px; border-radius: 999px; margin-right: 6px;
+    background: rgba(124,92,255,.15); color: #b7a6ff; border: 1px solid rgba(124,92,255,.35);
+  }
+  .layout { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: 300px 1fr; gap: 28px; padding: 28px 24px 80px; }
+  nav.toc { position: sticky; top: 20px; align-self: start; font-size: 14px; }
+  nav.toc h4 { margin: 0 0 8px; text-transform: uppercase; letter-spacing: .08em; font-size: 11px; color: var(--muted); }
+  nav.toc a { display: block; color: var(--muted); text-decoration: none; padding: 5px 10px; border-radius: 7px; border-left: 2px solid transparent; }
+  nav.toc a:hover { background: var(--panel); color: var(--text); border-left-color: var(--accent); }
+  main { min-width: 0; }
+  section.card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px 24px; margin-bottom: 22px;
+  }
+  section.card > h2 { margin: 0 0 4px; font-size: 20px; display: flex; align-items: center; gap: 10px; }
+  section.card > .sub { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+  .step { display: grid; grid-template-columns: 30px 1fr; gap: 12px; margin: 12px 0; }
+  .step .n {
+    width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--accent); color: white; font-weight: 700; font-size: 13px;
+  }
+  .step .t { margin: 2px 0 0; }
+  .tag { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; text-transform: uppercase; letter-spacing: .04em; }
+  .tag.safe { background: rgba(53,208,165,.15); color: var(--accent-2); }
+  .tag.active { background: rgba(255,176,32,.15); color: var(--warn); }
+  .callout {
+    border-left: 3px solid var(--warn); background: rgba(255,176,32,.07);
+    padding: 12px 16px; border-radius: 8px; margin: 14px 0; font-size: 14px;
+  }
+  .callout.danger { border-left-color: var(--danger); background: rgba(255,92,124,.08); }
+  .callout.ok { border-left-color: var(--accent-2); background: rgba(53,208,165,.08); }
+  /* ---- practice forms ---- */
+  .practice { border-color: rgba(124,92,255,.4); }
+  .practice h2 { color: #c9bcff; }
+  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .form-group { margin-bottom: 14px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
+  .hint { font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 4px; }
+  input[type=text], input[type=email], input[type=password], input[type=search],
+  input[type=url], input[type=tel], input[type=number], input[type=date],
+  textarea, select {
+    width: 100%; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text); font-size: 14px; font-family: inherit;
+  }
+  input:focus, textarea:focus, select:focus { outline: 2px solid rgba(124,92,255,.5); border-color: var(--accent); }
+  textarea { min-height: 70px; resize: vertical; }
+  button.demo {
+    background: var(--accent); color: white; border: none; padding: 9px 16px;
+    border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 14px;
+  }
+  button.demo.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .result { margin-top: 12px; padding: 10px 14px; border-radius: 8px; background: var(--code-bg); border: 1px dashed var(--border); font-family: ui-monospace, monospace; font-size: 13px; color: var(--muted); min-height: 20px; white-space: pre-wrap; word-break: break-word; }
+  .vuln-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  table.ref { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.ref th, table.ref td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.ref th { color: var(--muted); font-weight: 600; }
+  .scroll-x { overflow-x: auto; }
+  footer { max-width: 1180px; margin: 0 auto; padding: 0 24px 60px; color: var(--muted); font-size: 13px; }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    nav.toc { position: static; }
+    .field-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="hero-inner">
+    <span class="badge">SecTest Pro</span>
+    <span class="badge">Chrome MV3</span>
+    <span class="badge">Hands-on lab</span>
+    <h1>Learn &amp; Practice: SecTest Pro</h1>
+    <p>This single page teaches you every part of the extension and gives you safe forms to practice on. Load the extension, open this page, and follow the tutorial on the right while testing the forms below it.</p>
+    <p style="font-size:13px;">Serve it locally so it's clearly in-scope: <code>python3 -m http.server 8000</code> → open <code>http://localhost:8000/LEARN.html</code>. Add <code>localhost</code> and <code>127.0.0.1</code> to the extension allowlist.</p>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="toc">
+    <h4>Tutorial</h4>
+    <a href="#setup">0 · First-time setup</a>
+    <a href="#scan">1 · Scan tab</a>
+    <a href="#payloads">2 · Payloads tab</a>
+    <a href="#recon">3 · Recon tab</a>
+    <a href="#agent">4 · Companion Agent</a>
+    <a href="#checklist">5 · Checklist tab</a>
+    <a href="#programs">6 · Programs tab</a>
+    <a href="#ai">7 · AI tab</a>
+    <a href="#history">8 · History tab</a>
+    <a href="#settings">9 · Settings tab</a>
+    <h4 style="margin-top:16px;">Practice forms</h4>
+    <a href="#p-login">Login (SQLi)</a>
+    <a href="#p-search">Search (XSS)</a>
+    <a href="#p-profile">Profile (mixed)</a>
+    <a href="#p-lookup">Lookup (CMDi/SSRF)</a>
+    <a href="#p-file">File upload</a>
+    <a href="#p-types">Input-type zoo</a>
+  </nav>
+
+  <main>
+    <!-- 0 -->
+    <section class="card" id="setup">
+      <h2>0 · First-time setup</h2>
+      <p class="sub">Do this once before anything else.</p>
+      <div class="step"><div class="n">1</div><p class="t">Build &amp; load the extension: <code>npm install &amp;&amp; npm run build</code>, then in <code>chrome://extensions</code> enable <b>Developer mode</b> → <b>Load unpacked</b> → pick the <code>build/</code> folder.</p></div>
+      <div class="step"><div class="n">2</div><p class="t">Open the extension → <b>Settings</b> tab → add <code>localhost</code> and <code>127.0.0.1</code> to the <b>Host Allowlist</b>. The extension refuses to act on hosts that aren't allow-listed.</p></div>
+      <div class="step"><div class="n">3</div><p class="t">Keep <b>Dry Run Mode</b> ON (green badge). In dry run everything is simulated and logged, nothing is actually written to the page.</p></div>
+      <div class="step"><div class="n">4</div><p class="t">Serve this page over <code>http://localhost:8000</code> (not <code>file://</code>) so recon and scope features behave like a real target, then reload the page so the content script injects.</p></div>
+      <div class="callout ok">The badge on the toolbar icon shows <b>DRY</b> or <b>LIVE</b> and turns into a counter as you approach the 20-actions/minute rate limit.</div>
+    </section>
+
+    <!-- 1 -->
+    <section class="card" id="scan">
+      <h2>1 · Scan tab <span class="tag safe">safe</span></h2>
+      <p class="sub">Enumerate every form field on the current page and pick which ones to test.</p>
+      <div class="step"><div class="n">1</div><p class="t">Click <b>Scan</b>. The extension lists every <code>input</code>, <code>textarea</code>, <code>select</code>, and file input with its name/id/placeholder/type and a stable unique id.</p></div>
+      <div class="step"><div class="n">2</div><p class="t">Tick the checkbox on the fields you want to target (or select all). Text-like fields are eligible; <code>date/number/range/color/file/select</code> are skipped automatically for safety.</p></div>
+      <div class="step"><div class="n">3</div><p class="t">Use <b>Insert Marker</b> to drop a unique token like <code>[TEST_1697…]</code> into a field — the quickest way to confirm the extension can reach that input.</p></div>
+      <div class="step"><div class="n">4</div><p class="t">Modified fields get a colored outline on the page so you can see exactly what was touched. Nothing is ever auto-submitted.</p></div>
+      <div class="callout">Re-scan whenever the page changes (SPA navigation, new modal). Field references are tied to the scan session; a stale reference gives an "element not found" error.</div>
+      <p class="vuln-note">Practice against <a href="#p-types">the input-type zoo</a> to watch which types get filled and which get skipped.</p>
+    </section>
+
+    <!-- 2 -->
+    <section class="card" id="payloads">
+      <h2>2 · Payloads tab</h2>
+      <p class="sub">Choose a vulnerability family, pick a payload source, and run it across the fields you selected on Scan.</p>
+      <div class="step"><div class="n">1</div><p class="t">Pick a <b>vulnerability family</b>: XSS, SQL Injection, Command Injection, Path Traversal, SSRF, XPath, or LDAP.</p></div>
+      <div class="step"><div class="n">2</div><p class="t">Pick a <b>payload source</b>: <b>Library</b> (curated benign examples), <b>File</b> (upload a <code>.txt</code>, one payload per line), <b>Text</b> (type your own, one per line), or <b>AI</b> (generate — see the AI tab).</p></div>
+      <div class="step"><div class="n">3</div><p class="t">Click <b>Run Test</b>. Each selected field is filled with the payload(s), outlined, and every action is written to the audit log. No form is submitted — you review results and submit manually if you choose.</p></div>
+      <div class="callout">Payload validation blocks obviously dangerous strings (<code>&lt;script&gt;</code>, event handlers, <code>DROP/DELETE/UNION</code>, <code>../</code>, <code>eval()</code>) on normal hosts. Sanctioned lab hosts in your allowlist bypass this so you can test real payloads.</div>
+      <table class="ref"><thead><tr><th>Family</th><th>Try it on</th></tr></thead><tbody>
+        <tr><td>SQL Injection</td><td><a href="#p-login">Login form</a></td></tr>
+        <tr><td>XSS</td><td><a href="#p-search">Search form</a></td></tr>
+        <tr><td>Command Injection / SSRF</td><td><a href="#p-lookup">Lookup form</a></td></tr>
+        <tr><td>Path Traversal</td><td><a href="#p-file">File upload</a>, <a href="#p-lookup">Lookup</a></td></tr>
+        <tr><td>XPath / LDAP</td><td><a href="#p-login">Login form</a></td></tr>
+      </tbody></table>
+    </section>
+
+    <!-- 3 -->
+    <section class="card" id="recon">
+      <h2>3 · Recon tab</h2>
+      <p class="sub">Understand the page and the target without attacking anything.</p>
+      <div class="step"><div class="n">1</div><p class="t"><b>Page Recon</b> → <b>Overview / Forms / Storage</b>: summarizes forms, links, and the <i>names</i> of storage keys/cookies (values are not read). <b>Export Source</b> saves the page HTML.</p></div>
+      <div class="step"><div class="n">2</div><p class="t"><b>JS Change Monitor</b> → <b>Probe</b>: fingerprints inline scripts so you can spot when a target's front-end changes between visits.</p></div>
+      <div class="step"><div class="n">3</div><p class="t"><b>Active Recon</b> and <b>Fetch Recon Files</b> reach out through the Companion Agent (next section) to pull subdomains, live hosts, ports, and nuclei findings.</p></div>
+      <div class="step"><div class="n">4</div><p class="t"><b>Scheduled Watches</b>: register a target to re-run recon on an interval and diff results, so new subdomains/endpoints surface automatically.</p></div>
+    </section>
+
+    <!-- 4 -->
+    <section class="card" id="agent">
+      <h2>4 · Companion Agent <span class="tag active">active tools</span></h2>
+      <p class="sub">The browser can't run <code>nmap</code>/<code>nuclei</code>. A tiny local HTTP service does, and re-checks scope on every request.</p>
+      <div class="step"><div class="n">1</div><p class="t">Start it: <code>cd agent &amp;&amp; cp .env.example .env</code>, set <code>AGENT_TOKEN</code> to a long random string, then <code>docker compose up --build</code>. It listens on <code>http://127.0.0.1:8787</code> (loopback only).</p></div>
+      <div class="step"><div class="n">2</div><p class="t">In the extension → <b>Settings/Recon → Companion Agent</b>: paste the Agent URL and token, click <b>Check Health</b> (shows installed tools), then <b>Sync scope</b> to push your program scope to the agent.</p></div>
+      <div class="step"><div class="n">3</div><p class="t">Run tools from <b>Recon → Companion Agent</b>:</p></div>
+      <table class="ref"><thead><tr><th>Tool</th><th>Risk</th><th>Purpose</th></tr></thead><tbody>
+        <tr><td>subfinder</td><td><span class="tag safe">safe</span></td><td>Subdomain enumeration</td></tr>
+        <tr><td>dnsx</td><td><span class="tag safe">safe</span></td><td>DNS resolution</td></tr>
+        <tr><td>httpx</td><td><span class="tag safe">safe</span></td><td>Live-host probing, titles, tech</td></tr>
+        <tr><td>naabu</td><td><span class="tag active">active</span></td><td>Port scan (top ports)</td></tr>
+        <tr><td>nmap</td><td><span class="tag active">active</span></td><td>Port/service detail</td></tr>
+        <tr><td>nuclei</td><td><span class="tag active">active</span></td><td>Known-vuln template scan</td></tr>
+      </tbody></table>
+      <p class="vuln-note">Profiles: <code>quick</code>, <code>top1000</code>, <code>services (nmap)</code>. Active tools are gated by scope <i>and</i> the <code>AGENT_ALLOW_ACTIVE</code> switch.</p>
+      <div class="callout danger"><b>Authorization first.</b> Active tools touch the target. Only ever point the agent at assets you are explicitly authorized to test. Out-of-scope always wins — the agent returns <code>403 out_of_scope</code> for anything not in scope.</div>
+    </section>
+
+    <!-- 5 -->
+    <section class="card" id="checklist">
+      <h2>5 · Checklist tab</h2>
+      <p class="sub">A structured testing checklist so you cover a target methodically instead of ad-hoc.</p>
+      <div class="step"><div class="n">1</div><p class="t">Walk each item as you test the page — enumeration, auth, injection, access control, etc. Check items off to track coverage for the current target.</p></div>
+      <div class="step"><div class="n">2</div><p class="t">Pair it with the audit log (Settings → Export) to produce evidence of what you did and when.</p></div>
+    </section>
+
+    <!-- 6 -->
+    <section class="card" id="programs">
+      <h2>6 · Programs tab</h2>
+      <p class="sub">Track the bug-bounty programs you're working — scope and payouts.</p>
+      <div class="step"><div class="n">1</div><p class="t"><b>Programs &amp; Payouts</b> stores each program's in-scope / out-of-scope assets. This scope is what <b>Sync scope</b> pushes to the Companion Agent, and what the extension checks before acting.</p></div>
+      <div class="step"><div class="n">2</div><p class="t">Keep scope accurate here first — every other feature (scan, recon, agent) trusts it.</p></div>
+    </section>
+
+    <!-- 7 -->
+    <section class="card" id="ai">
+      <h2>7 · AI tab</h2>
+      <p class="sub">Generate context-aware payloads with an LLM. Two backends are supported.</p>
+      <div class="step"><div class="n">1</div><p class="t"><b>Groq</b> (cloud) or <b>Ollama</b> (local). For Ollama: <code>ollama pull llama3</code>, export the origins env var so the extension is allowed, then <code>ollama serve</code>.</p></div>
+      <div class="step"><div class="n">2</div><p class="t">Set the base URL / model in the AI panel, click <b>Test Connection</b>, then generate. Generated payloads flow into the <b>Payloads</b> tab's "AI" source.</p></div>
+      <div class="callout">Ollama origins fix (403 errors): <code>export OLLAMA_ORIGINS='["chrome-extension://*","http://127.0.0.1","http://localhost"]'</code> before <code>ollama serve</code>. Default URL <code>http://127.0.0.1:11434</code>, model <code>llama3</code>.</div>
+    </section>
+
+    <!-- 8 -->
+    <section class="card" id="history">
+      <h2>8 · History tab</h2>
+      <p class="sub">Every payload you run is saved to <b>Payload History</b> so you can re-run the ones that worked and build your own library over time.</p>
+      <div class="step"><div class="n">1</div><p class="t">Review past payloads, re-apply a useful one, or promote it into your Library/Text source for the next target.</p></div>
+    </section>
+
+    <!-- 9 -->
+    <section class="card" id="settings">
+      <h2>9 · Settings tab</h2>
+      <p class="sub">All the guardrails live here.</p>
+      <table class="ref"><thead><tr><th>Control</th><th>What it does</th></tr></thead><tbody>
+        <tr><td>Host Allowlist</td><td>Per-host on/off; wildcard <code>*</code> supported. The extension only acts on allow-listed hosts.</td></tr>
+        <tr><td>Dry Run Mode</td><td>ON = simulate + log only. OFF = LIVE, every action needs explicit confirmation.</td></tr>
+        <tr><td>Audit Log</td><td>Timestamp, URL, action, element, result for the last 100 actions. <b>Export Log</b> → JSON for evidence.</td></tr>
+        <tr><td>Rate limit</td><td>20 actions/minute, throttled automatically to avoid accidental DoS.</td></tr>
+        <tr><td>Companion Agent</td><td>Agent URL + token, health check, scope sync.</td></tr>
+      </tbody></table>
+      <div class="callout danger">Turning off Dry Run means real values get written to real fields. Never do this on a target you aren't authorized to test. Nothing is auto-submitted, but LIVE writes are real.</div>
+    </section>
+
+    <!-- ============ PRACTICE FORMS ============ -->
+    <section class="card practice" id="p-login">
+      <h2>🧪 Practice — Login form</h2>
+      <p class="sub">Best for: <b>SQL Injection</b>, <b>XPath</b>, <b>LDAP</b>, marker insertion. Scan → select both fields → Payloads → SQLi → Library → Run.</p>
+      <form onsubmit="return showResult(this,event)">
+        <div class="field-grid">
+          <div class="form-group"><label>Username</label><input type="text" name="username" placeholder="admin" /><div class="hint">Try <code>' OR '1'='1</code> in dry run to see it fill.</div></div>
+          <div class="form-group"><label>Password</label><input type="password" name="password" placeholder="••••••••" /></div>
+        </div>
+        <button type="submit" class="demo">Log in</button>
+        <button type="button" class="demo ghost" onclick="clearForm(this)">Clear</button>
+        <div class="result" aria-live="polite">Submitted values will echo here (this page is inert — it never sends data anywhere).</div>
+      </form>
+    </section>
+
+    <section class="card practice" id="p-search">
+      <h2>🧪 Practice — Search form</h2>
+      <p class="sub">Best for: <b>Reflected XSS</b>. This form echoes your input back into the page so you can see reflection behavior.</p>
+      <form onsubmit="return showResult(this,event,true)">
+        <div class="form-group"><label>Search query</label><input type="search" name="q" placeholder="search products…" /><div class="hint">Payloads tab → XSS → Library → Run. Watch the echo below.</div></div>
+        <button type="submit" class="demo">Search</button>
+        <div class="result" aria-live="polite">Your query is reflected here.</div>
+      </form>
+    </section>
+
+    <section class="card practice" id="p-profile">
+      <h2>🧪 Practice — Profile form (mixed inputs)</h2>
+      <p class="sub">A realistic multi-field form. Good for testing batch-apply across several text-like fields at once.</p>
+      <form onsubmit="return showResult(this,event)">
+        <div class="field-grid">
+          <div class="form-group"><label>Full name</label><input type="text" name="fullname" placeholder="Jane Doe" /></div>
+          <div class="form-group"><label>Email</label><input type="email" name="email" placeholder="jane@example.com" /></div>
+          <div class="form-group"><label>Website</label><input type="url" name="website" placeholder="https://…" /></div>
+          <div class="form-group"><label>Phone</label><input type="tel" name="phone" placeholder="+1…" /></div>
+        </div>
+        <div class="form-group"><label>Bio</label><textarea name="bio" placeholder="A few words about you…"></textarea></div>
+        <div class="form-group"><label>Role</label>
+          <select name="role"><option>Viewer</option><option>Editor</option><option>Admin</option></select>
+          <div class="hint">Select is intentionally skipped by the runner — confirm it stays untouched.</div>
+        </div>
+        <button type="submit" class="demo">Save profile</button>
+        <div class="result" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <section class="card practice" id="p-lookup">
+      <h2>🧪 Practice — Lookup / fetch form</h2>
+      <p class="sub">Best for: <b>Command Injection</b>, <b>SSRF</b>, <b>Path Traversal</b>. Fields named like host / URL / file to mimic dangerous sinks.</p>
+      <form onsubmit="return showResult(this,event)">
+        <div class="field-grid">
+          <div class="form-group"><label>Host to ping</label><input type="text" name="host" placeholder="example.com" /><div class="hint">CMDi target, e.g. <code>127.0.0.1; id</code></div></div>
+          <div class="form-group"><label>URL to fetch</label><input type="url" name="fetch_url" placeholder="https://…" /><div class="hint">SSRF target, e.g. <code>http://169.254.169.254/</code></div></div>
+        </div>
+        <div class="form-group"><label>File path</label><input type="text" name="filepath" placeholder="/var/www/report.pdf" /><div class="hint">Traversal target, e.g. <code>../../etc/passwd</code></div></div>
+        <button type="submit" class="demo">Run lookup</button>
+        <div class="result" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <section class="card practice" id="p-file">
+      <h2>🧪 Practice — File upload</h2>
+      <p class="sub">Best for: the <b>Attach XML / file</b> action. The runner uses a DataTransfer to attach a harmless file without you touching the OS picker.</p>
+      <form onsubmit="return showResult(this,event)">
+        <div class="form-group"><label>Avatar (image)</label><input type="file" name="avatar" accept="image/*" /></div>
+        <div class="form-group"><label>Document</label><input type="file" name="document" /></div>
+        <button type="submit" class="demo">Upload</button>
+        <div class="result" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <section class="card practice" id="p-types">
+      <h2>🧪 Practice — Input-type zoo</h2>
+      <p class="sub">One of every input type. Use it to learn which types the runner fills (text-like) and which it safely skips (<code>date/number/range/color/file/select</code>).</p>
+      <form onsubmit="return showResult(this,event)">
+        <div class="field-grid">
+          <div class="form-group"><label>text</label><input type="text" name="t_text" /></div>
+          <div class="form-group"><label>email</label><input type="email" name="t_email" /></div>
+          <div class="form-group"><label>password</label><input type="password" name="t_password" /></div>
+          <div class="form-group"><label>search</label><input type="search" name="t_search" /></div>
+          <div class="form-group"><label>url</label><input type="url" name="t_url" /></div>
+          <div class="form-group"><label>tel</label><input type="tel" name="t_tel" /></div>
+          <div class="form-group"><label>number (skipped)</label><input type="number" name="t_number" /></div>
+          <div class="form-group"><label>date (skipped)</label><input type="date" name="t_date" /></div>
+          <div class="form-group"><label>range (skipped)</label><input type="range" name="t_range" /></div>
+          <div class="form-group"><label>color (skipped)</label><input type="color" name="t_color" /></div>
+        </div>
+        <div class="form-group"><label>textarea</label><textarea name="t_textarea"></textarea></div>
+        <button type="submit" class="demo">Submit</button>
+        <div class="result" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Recommended first run</h2>
+      <div class="step"><div class="n">1</div><p class="t">Settings → allowlist <code>localhost</code>, Dry Run ON.</p></div>
+      <div class="step"><div class="n">2</div><p class="t">Scan → select the two <a href="#p-login">Login</a> fields → Insert Marker. Confirm they get outlined.</p></div>
+      <div class="step"><div class="n">3</div><p class="t">Payloads → SQLi → Library → Run. Read the audit log entry it created.</p></div>
+      <div class="step"><div class="n">4</div><p class="t">Recon → Page Recon → Overview to see this page's forms and storage-key names.</p></div>
+      <div class="step"><div class="n">5</div><p class="t">Settings → Export Log to save your evidence.</p></div>
+      <div class="callout ok">You've now touched Scan, Payloads, Recon, the guardrails, and the audit trail — the core loop. Layer in the Companion Agent and AI once this feels natural.</div>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <p><b>Legal:</b> SecTest Pro is for authorized security testing only. This page is an inert local lab — it never transmits data. Only run active tools against assets you are explicitly authorized to test. Unauthorized testing may violate the CFAA, the Computer Misuse Act, and similar laws.</p>
+</footer>
+
+<script>
+  function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  function showResult(form, ev, reflect){
+    ev.preventDefault();
+    const data = new FormData(form);
+    const out = form.querySelector('.result');
+    const lines = [];
+    for (const [k,v] of data.entries()){
+      if (v instanceof File) lines.push(k + ' = [file] ' + (v.name || '(none)'));
+      else lines.push(k + ' = ' + v);
+    }
+    // Intentionally reflects input for XSS practice on the search form only.
+    if (reflect){
+      out.innerHTML = 'Results for: <b>' + esc(data.get('q') || '') + '</b>';
+    } else {
+      out.textContent = lines.join('\n') || '(empty)';
+    }
+    return false;
+  }
+  function clearForm(btn){ btn.closest('form').reset(); const r = btn.closest('form').querySelector('.result'); if(r) r.textContent=''; }
+</script>
+</body>
+</html>

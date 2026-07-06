@@ -1,0 +1,28 @@
+# Run:  cp .env.example .env  &&  (edit .env)  &&  docker compose up --build
+#
+# Host exposure is deliberately limited to 127.0.0.1 so the agent is reachable
+# only from this machine (the extension), never from the network.
+
+services:
+  agent:
+    build: .
+    image: bugbounty-companion-agent
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      # REQUIRED: shared secret the extension must send. Set it in .env.
+      AGENT_TOKEN: "${AGENT_TOKEN:?set AGENT_TOKEN in .env}"
+      # Seed scope here, or push it from the extension (Config → Sync scope).
+      AGENT_SCOPE_IN: "${AGENT_SCOPE_IN:-}"
+      AGENT_SCOPE_OUT: "${AGENT_SCOPE_OUT:-}"
+      # Set to "false" to forbid active tools (port scans, nuclei) entirely.
+      AGENT_ALLOW_ACTIVE: "${AGENT_ALLOW_ACTIVE:-true}"
+      AGENT_RATE_MAX: "${AGENT_RATE_MAX:-30}"
+      # Optional — scheduled-watch delta alerts to your own webhook.
+      AGENT_WEBHOOK_URL: "${AGENT_WEBHOOK_URL:-}"
+      AGENT_WEBHOOK_PLATFORM: "${AGENT_WEBHOOK_PLATFORM:-discord}"
+      AGENT_DATA_DIR: "/app/data"
+    volumes:
+      # Persist watches + history across restarts.
+      - ./data:/app/data
+    restart: unless-stopped

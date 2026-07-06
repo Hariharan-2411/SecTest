@@ -1,6 +1,8 @@
-#  SecTest Pro — Form Security Tester (MV3)
+#  SecTest Pro — Web Security Testing Toolkit (MV3)
 
-Chrome/Brave MV3 extension for safe, repeatable form security testing. It enumerates form fields, runs OWASP-style payloads across compatible inputs, enforces guardrails (allowlist, dry-run, confirmations, rate limits), logs an immutable audit trail, and can generate payloads locally via Ollama (LLM).
+Chrome/Brave MV3 extension for safe, repeatable web-app security testing. It enumerates form fields and runs OWASP-style payloads across compatible inputs, does passive **page recon** (forms, storage-key names, JS change monitoring), tracks **bug-bounty programs & scope**, drives a **Companion Agent** for terminal recon tools (`subfinder`/`httpx`/`nmap`/`nuclei`), and generates payloads with an LLM (Ollama or Groq) — all behind guardrails (allowlist, dry-run, confirmations, rate limits) with an immutable audit trail.
+
+The popup is organized into tabs: **Scan · Payloads · Recon · Checklist · Programs · AI · History · Settings**. See [The Popup, Tab by Tab](#-the-popup-tab-by-tab) for a full reference, or jump straight into the hands-on lab at [LEARN.html](#-learn--practice-learnhtml).
 
 ![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -91,6 +93,71 @@ Chrome/Brave MV3 extension for safe, repeatable form security testing. It enumer
 - Local-only LLM via Ollama for payload suggestion
 - Runtime-configurable URL/model; connection test button
 - Handles JSON and streaming responses; timeouts with errors surfaced in UI
+
+## 🧭 The Popup, Tab by Tab
+
+### Scan
+Enumerates every `input`, `textarea`, `select`, and file input on the page with name/id/placeholder/type and a stable unique id. Tick the fields to target, use **Insert Marker** to drop a `[TEST_…]` token as a reachability check, and watch modified fields get outlined. Text-like inputs are eligible; `date/number/range/color/file/select` are skipped. Nothing is auto-submitted — re-scan after SPA navigation or new modals.
+
+### Payloads
+Run a chosen family (XSS · SQLi · Command Injection · Path Traversal · SSRF · XPath · LDAP) across the selected fields. Payload **source** is Library (curated benign), File (`.txt`, one per line), Text (type your own), or AI. Validation blocks obviously dangerous strings on normal hosts; allow-listed **sanctioned lab hosts bypass it** so you can test real payloads.
+
+### Recon
+Passive by default. **Page Recon → Overview / Forms / Storage** summarizes forms, links, and the *names* of storage keys/cookies (values are never read); **Export Source** saves the HTML. **JS Change Monitor → Probe** fingerprints inline scripts to detect front-end changes between visits. **Active Recon / Fetch Recon Files** reach out through the Companion Agent. **Scheduled Watches** re-run recon on an interval and diff results so new subdomains/endpoints surface automatically.
+
+### Checklist
+A structured testing checklist so you cover a target methodically; check items off to track coverage and pair with the audit log for evidence.
+
+### Programs
+**Programs & Payouts** — track each program's in-scope / out-of-scope assets and payouts. This is the source of truth: it's what **Sync scope** pushes to the agent and what the extension checks before acting.
+
+### AI
+Generate context-aware payloads with **Groq** (cloud) or **Ollama** (local). Set base URL/model, **Test Connection**, then generate — results flow into the Payloads tab's AI source. Ollama origin fix is in the [AI Integration](#-ai-integration-ollama) section.
+
+### History
+**Payload History** saves every payload you run so you can re-apply the ones that worked and grow your own library.
+
+### Settings
+All guardrails: **Host Allowlist** (per-host, wildcard `*`), **Dry Run Mode** (simulate+log vs. LIVE-with-confirmation), **Audit Log** (last 100 actions, export JSON), **Rate limit** (20/min), and **Companion Agent** (URL + token, health check, scope sync).
+
+## 🛰️ Companion Agent
+
+The browser can't run `nmap`/`nuclei`. The [Companion Agent](../agent/README.md) is a zero-dependency, **loopback-only** HTTP service that runs allow-listed recon tools against **in-scope** targets and returns results to the extension, re-checking scope on every request.
+
+```bash
+cd ../agent
+cp .env.example .env          # set AGENT_TOKEN=$(openssl rand -hex 24)
+docker compose up --build     # → http://127.0.0.1:8787
+```
+
+Then in the extension → **Settings/Recon → Companion Agent**: set the URL + token → **Check Health** → **Sync scope** → run tools from **Recon**.
+
+| Tool | Risk | Purpose |
+|------|------|---------|
+| subfinder | safe | subdomain enumeration |
+| dnsx | safe | DNS resolution |
+| httpx | safe | live-host probing, titles, tech |
+| gau / waybackurls | safe | historical URLs from archives (no target traffic) |
+| naabu | active | port scan (top ports) |
+| nmap | active | port/service detail |
+| nuclei | active | known-vuln template scan |
+| katana | active | crawl the live host for endpoints |
+| ffuf / feroxbuster | active | content/directory brute-force |
+
+`safe` = passive/read-only; `active` = touches the target, gated by scope **and** the `AGENT_ALLOW_ACTIVE` switch. No shell (tools run via `execFile` with array args), token required, bound to `127.0.0.1`, rate-limited. Content-discovery brute-forcers read `AGENT_WORDLIST`. See the [agent README](../agent/README.md) for the full API and guardrails.
+
+## 🎓 Learn & Practice (LEARN.html)
+
+[`LEARN.html`](LEARN.html) is a self-contained tutorial + practice lab. It walks through every tab and gives you inert forms mapped to each vulnerability family — login (SQLi/XPath/LDAP), search (reflected XSS), a mixed profile form, a lookup form (CMDi/SSRF/traversal), a file upload, and an "input-type zoo" to see which types the runner fills vs. skips.
+
+```bash
+python3 -m http.server 8000
+# → http://localhost:8000/LEARN.html   (serve over localhost, not file://)
+```
+
+**Recommended first run:** Settings → allowlist `localhost`, Dry Run ON → **Scan** the Login fields → Insert Marker → **Payloads** → SQLi → Library → Run → read the audit-log entry → **Recon → Overview** → **Settings → Export Log**.
+
+> A full standalone walkthrough also lives in [USAGE_GUIDE.md](../USAGE_GUIDE.md) at the repo root.
 
 ## 📦 Installation
 
@@ -206,7 +273,10 @@ docker run -d -p 8080:80 vulnerables/web-dvwa
 
 ## 📖 Documentation
 
+- **[Usage Guide](../USAGE_GUIDE.md)** — full top-to-bottom walkthrough (extension + agent + lab)
+- **[Learn & Practice page](LEARN.html)** — interactive tutorial + safe practice forms
 - **[Security Testing Guide](SECURITY_TESTING_GUIDE.md)** — end-to-end operations and safety
+- **[Companion Agent](../agent/README.md)** — terminal recon tools, API, guardrails
 - **[Ollama Integration Guide](OLLAMA_INTEGRATION.md)** — AI setup and tips
 
 ## 🔐 Security & Safety

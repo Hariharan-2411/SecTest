@@ -3,7 +3,30 @@ console.log('SecTest Pro - Content Script Loaded');
 import {
   collectFields,
   extractPageRecon,
+  analyzeScriptSource,
 } from '../../utils/extraction';
+import { isInScope } from '../../utils/scope';
+import { summarizeReflection, makeMarker } from '../../utils/reflection';
+
+// Independent scope guard for the content script. DOM-mutating actions (payload
+// injection, file attach) are real side effects, so they must be gated on scope
+// HERE — not only by the popup UI. We cache the scope from storage and refresh
+// it on change so the check at message time is synchronous.
+let currentScope = { inScope: ['*'], outOfScope: [] };
+try {
+  chrome.storage.local.get(['scope'], (r) => {
+    if (r && r.scope && Array.isArray(r.scope.inScope)) currentScope = r.scope;
+  });
+  chrome.storage.onChanged.addListener((changes, ns) => {
+    if (ns === 'local' && changes.scope && changes.scope.newValue) {
+      currentScope = changes.scope.newValue;
+    }
+  });
+} catch (_) {}
+
+function inScopeHere() {
+  return isInScope(window.location.href, currentScope);
+}
 
 // Form element scanner. Field extraction now delegates to the tested, pure
 // extraction core (src/utils/extraction.js); this class remains the stateful
@@ -59,78 +82,6 @@ class FormScanner {
       capturedAt: new Date().toISOString(),
       html: document.documentElement.outerHTML,
     };
-    this.scannedElements = [];
-
-    const inputs = document.querySelectorAll('input');
-    inputs.forEach((input, index) => {
-      const elementInfo = {
-        type: 'input',
-        subType: input.type || 'text',
-        name: input.name || `unnamed_input_${index}`,
-        id: input.id || '',
-        placeholder: input.placeholder || '',
-        value: input.value || '',
-        required: input.required,
-        xpath: this.getXPath(input),
-        element: input,
-        uniqueId: `input_${index}_${this.scanId}`
-      };
-      this.scannedElements.push(elementInfo);
-    });
-
-    const textareas = document.querySelectorAll('textarea');
-    textareas.forEach((textarea, index) => {
-      const elementInfo = {
-        type: 'textarea',
-        subType: 'textarea',
-        name: textarea.name || `unnamed_textarea_${index}`,
-        id: textarea.id || '',
-        placeholder: textarea.placeholder || '',
-        value: textarea.value || '',
-        required: textarea.required,
-        xpath: this.getXPath(textarea),
-        element: textarea,
-        uniqueId: `textarea_${index}_${this.scanId}`
-      };
-      this.scannedElements.push(elementInfo);
-    });
-
-    const selects = document.querySelectorAll('select');
-    selects.forEach((select, index) => {
-      const options = Array.from(select.options).map(opt => opt.value);
-      const elementInfo = {
-        type: 'select',
-        subType: 'select',
-        name: select.name || `unnamed_select_${index}`,
-        id: select.id || '',
-        options: options,
-        selectedValue: select.value,
-        required: select.required,
-        xpath: this.getXPath(select),
-        element: select,
-        uniqueId: `select_${index}_${this.scanId}`
-      };
-      this.scannedElements.push(elementInfo);
-    });
-
-    const fileInputs = document.querySelectorAll('input[type="file"]');
-    fileInputs.forEach((fileInput, index) => {
-      const elementInfo = {
-        type: 'file',
-        subType: 'file',
-        name: fileInput.name || `unnamed_file_${index}`,
-        id: fileInput.id || '',
-        accept: fileInput.accept || '*',
-        multiple: fileInput.multiple,
-        required: fileInput.required,
-        xpath: this.getXPath(fileInput),
-        element: fileInput,
-        uniqueId: `file_${index}_${this.scanId}`
-      };
-      this.scannedElements.push(elementInfo);
-    });
-
-    return this.scannedElements.map(el => ({...el, element: null}));
   }
 
   getXPath(element) {
@@ -200,6 +151,145 @@ class FormScanner {
 
 const scanner = new FormScanner();
 
+// Passive auto-capture: on load, report what the page already exposes so the
+// background can accumulate a per-host inventory (scope-gated there). Purely
+// read-only — no network requests, no payloads, no DOM changes.
+function buildObservation() {
+  let recon = {};
+  try {
+    recon = scanner.getPageRecon() || {};
+  } catch (_) {}
+  const abs = (v) => {
+    try {
+      return new URL(v, window.location.href).href;
+    } catch (_) {
+      return null;
+    }
+  };
+  const links = [];
+  try {
+    for (const a of document.querySelectorAll('a[href]')) {
+      const h = abs(a.getAttribute('href'));
+      if (h && /^https?:/i.test(h)) links.push(h);
+    }
+  } catch (_) {}
+  const scripts = [];
+  try {
+    for (const s of document.querySelectorAll('script[src]')) {
+      const h = abs(s.getAttribute('src'));
+      if (h) scripts.push(h);
+    }
+  } catch (_) {}
+  return {
+    endpoints: recon.endpoints || [],
+    links,
+    scripts,
+    forms: recon.forms || [],
+    cookieNames: recon.cookieNames || [],
+    secrets: recon.secrets || [],
+    sinks: recon.sinks || [],
+  };
+}
+
+// Deep-JS scan: fetch the page's SAME-ORIGIN external scripts and mine each for
+// endpoints, secrets, and DOM-XSS sinks. Same-origin GET only (the browser
+// already loaded these), scope-gated, bounded. Folds findings into the per-host
+// inventory via the passive-observe path so they accumulate in one place.
+const DEEP_JS_MAX = 40;
+
+async function deepJsScan() {
+  if (!inScopeHere()) return { success: false, reason: 'out_of_scope' };
+
+  const pageOrigin = window.location.origin;
+  const urls = [];
+  try {
+    for (const s of document.querySelectorAll('script[src]')) {
+      let abs = null;
+      try {
+        abs = new URL(s.getAttribute('src'), window.location.href).href;
+      } catch (_) {
+        continue;
+      }
+      // Only same-origin scripts are readable by fetch without CORS.
+      if (abs && abs.startsWith(pageOrigin) && !urls.includes(abs)) urls.push(abs);
+      if (urls.length >= DEEP_JS_MAX) break;
+    }
+  } catch (_) {}
+
+  const endpointSet = new Set();
+  const secretKeys = new Set();
+  const secrets = [];
+  const sinks = [];
+  const perScript = [];
+
+  for (const url of urls) {
+    let text = '';
+    let ok = false;
+    try {
+      const res = await fetch(url, { method: 'GET', credentials: 'omit' });
+      ok = res.ok;
+      text = await res.text();
+    } catch (e) {
+      perScript.push({ url, ok: false, error: String(e && e.message) });
+      continue;
+    }
+    const a = analyzeScriptSource(text);
+    for (const ep of a.endpoints) endpointSet.add(ep);
+    for (const sec of a.secrets) {
+      const key = sec.type + ':' + sec.preview;
+      if (!secretKeys.has(key)) {
+        secretKeys.add(key);
+        secrets.push(sec);
+      }
+    }
+    for (const sink of a.sinks) sinks.push(sink);
+    perScript.push({
+      url,
+      ok,
+      endpoints: a.endpoints.length,
+      secrets: a.secrets.length,
+      sinks: a.sinks.length,
+    });
+  }
+
+  const endpoints = Array.from(endpointSet);
+
+  // Accumulate into the per-host inventory (scope re-checked in the background).
+  try {
+    chrome.runtime.sendMessage(
+      {
+        action: 'passiveObserve',
+        pageUrl: window.location.href,
+        observation: { endpoints, scripts: urls, secrets, sinks },
+      },
+      () => { void chrome.runtime.lastError; }
+    );
+  } catch (_) {}
+
+  return {
+    success: true,
+    scanned: urls.length,
+    endpoints,
+    secrets,
+    sinks,
+    perScript,
+  };
+}
+
+function reportPassiveObservation() {
+  try {
+    chrome.runtime.sendMessage(
+      { action: 'passiveObserve', pageUrl: window.location.href, observation: buildObservation() },
+      () => {
+        void chrome.runtime.lastError; // no listener / out-of-scope → ignore
+      }
+    );
+  } catch (_) {}
+}
+
+if (document.readyState === 'complete') reportPassiveObservation();
+else window.addEventListener('load', reportPassiveObservation, { once: true });
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'ping') {
     sendResponse({ ok: true });
@@ -224,6 +314,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
   }
 
+  if (request.action === 'deepJsScan') {
+    deepJsScan()
+      .then((r) => sendResponse(r))
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
   if (request.action === 'extractPageSource') {
     try {
       const source = scanner.getPageSource();
@@ -234,6 +331,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'insertTestMarker') {
+    if (!inScopeHere()) { sendResponse({ success: false, message: 'out_of_scope' }); return true; }
     const element = scanner.findElementByUniqueId(request.uniqueId);
     if (element) {
       const testMarker = `[TEST_${Date.now()}]`;
@@ -264,6 +362,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'attachXML') {
+    if (!inScopeHere()) { sendResponse({ success: false, message: 'out_of_scope' }); return true; }
     const element = scanner.findElementByUniqueId(request.uniqueId);
     if (element) {
       if (element.type === 'file') {
@@ -314,6 +413,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'attachFile') {
+    if (!inScopeHere()) { sendResponse({ success: false, reason: 'out_of_scope' }); return true; }
     const { fileData, uniqueIds } = request;
     const idsToUse = Array.isArray(uniqueIds) && uniqueIds.length ? uniqueIds : scanner.scannedElements.map(e => e.uniqueId);
     const results = [];
@@ -351,7 +451,58 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'confirmReflection') {
+    if (!inScopeHere()) { sendResponse({ success: false, reason: 'out_of_scope' }); return true; }
+    const idsToUse = Array.isArray(request.uniqueIds) && request.uniqueIds.length
+      ? request.uniqueIds
+      : scanner.scannedElements.map((e) => e.uniqueId);
+    const results = [];
+    for (const id of idsToUse) {
+      const el = scanner.findElementByUniqueId(id);
+      if (!el) { results.push({ uniqueId: id, success: false, reason: 'not_found' }); continue; }
+      if (el.tagName === 'SELECT' || (el.type && el.type.toLowerCase() === 'file')) {
+        results.push({ uniqueId: id, success: false, reason: 'unsupported_field' });
+        continue;
+      }
+      // Inject a unique benign marker, fire input/change so any client-side
+      // handler that echoes the field runs, then read the DOM back. DOM-only —
+      // no network, no exploit — and the original value is restored afterwards.
+      const original = el.value;
+      const marker = makeMarker();
+      const set = scanner.safeSetValue(el, marker);
+      if (!set.success) { results.push({ uniqueId: id, success: false, reason: set.reason }); continue; }
+      try {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      } catch (_) {}
+      let urlReflected = false;
+      try { urlReflected = window.location.href.includes(marker); } catch (_) {}
+      let html = '';
+      try { html = document.documentElement.outerHTML; } catch (_) {}
+      const summary = summarizeReflection(html, marker, { urlReflected });
+      // Restore the field to its original value.
+      try {
+        el.value = original;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      } catch (_) {}
+      if (summary.reflected) {
+        el.style.border = '2px solid #ff5c7c';
+        setTimeout(() => (el.style.border = ''), 1500);
+      }
+      results.push({
+        uniqueId: id,
+        success: true,
+        reflected: summary.reflected,
+        contexts: summary.contexts,
+        count: summary.count,
+      });
+    }
+    sendResponse({ success: true, results });
+    return true;
+  }
+
   if (request.action === 'executeVulnTest') {
+    if (!inScopeHere()) { sendResponse({ success: false, reason: 'out_of_scope' }); return true; }
     const { vulnKey, payloads, uniqueIds } = request;
     const results = [];
     const idsToUse = Array.isArray(uniqueIds) && uniqueIds.length ? uniqueIds : scanner.scannedElements.map(e => e.uniqueId);
