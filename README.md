@@ -117,8 +117,16 @@ low-confidence findings from view. **Escalation skips `noise`** findings
 `tentative` and up stay escalatable, since escalation exists to strengthen
 uncertain findings.
 
+An optional **prose adapter** ([`src/utils/validateProse.js`](src/utils/validateProse.js))
+turns the `reasons[]` into a one-sentence "why this confidence" explanation via
+the LLM — but the model may only *rephrase* the reasons (sanitized, length-capped)
+and can never move the number; with no LLM it uses a deterministic offline
+sentence. The score always comes from the gate, never the model.
+
 This keeps false positives out of reports — noisy submissions destroy platform
-reputation. See [the design spec](docs/superpowers/specs/2026-07-12-validation-gate-design.md).
+reputation. See the design specs:
+[gate](docs/superpowers/specs/2026-07-12-validation-gate-design.md) ·
+[prose adapter](docs/superpowers/specs/2026-07-12-validation-prose-adapter-design.md).
 
 ### Optional AI (Ollama) 🚀
 
