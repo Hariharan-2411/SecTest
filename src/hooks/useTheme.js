@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 
-// Theme manager: dark (default) / light / system. The authoritative store is
+// Theme manager: light (default) / dark / system. The authoritative store is
 // chrome.storage.local["theme"]; a localStorage mirror lets us apply the theme
-// synchronously at import time so light-mode users don't see a dark flash
+// synchronously at import time so users don't see a theme flash
 // before chrome.storage (async) resolves.
 
 const STORAGE_KEY = 'theme';
@@ -46,7 +46,7 @@ function writeMirror(mode) {
 // Seed + apply synchronously at module load (before first paint).
 const initialMode = (() => {
   const m = readMirror();
-  return THEME_MODES.includes(m) ? m : 'dark';
+  return THEME_MODES.includes(m) ? m : 'light';
 })();
 applyResolved(resolveTheme(initialMode));
 

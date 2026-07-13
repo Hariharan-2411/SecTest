@@ -580,7 +580,9 @@ async function agentWatches() {
 async function agentCreateWatch({ target, tools, intervalMinutes, profile }) {
   const { scope } = await getSettings();
   const ev = evaluateScope(/^https?:\/\//i.test(target) ? target : `https://${target}/`, scope);
-  if (!ev.allowed) return { success: false, reason: 'out_of_scope', host: ev.host };
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  // Sync scope to the agent first — it re-checks server-side against its own copy.
+  await agentFetch('/scope', { method: 'PUT', body: scope });
   return agentFetch('/watches', { method: 'POST', body: { target, tools, intervalMinutes, profile } });
 }
 async function agentDeleteWatch(id) {
@@ -594,7 +596,10 @@ async function agentScan({ tool, target, profile }) {
   const { scope } = await getSettings();
   // Client-side scope pre-check for a fast, clear error; the agent re-checks too.
   const ev = evaluateScope(/^https?:\/\//i.test(target) ? target : `https://${target}/`, scope);
-  if (!ev.allowed) return { success: false, reason: 'out_of_scope', host: ev.host };
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  // The agent keeps its OWN copy of scope and gates every scan against it. Push
+  // ours first so an unsynced (or empty) agent scope can't reject in-scope targets.
+  await agentFetch('/scope', { method: 'PUT', body: scope });
   const resp = await agentFetch('/scan', { method: 'POST', body: { tool, target, profile } });
   // Fold discovered hosts/endpoints back into the inventory when possible.
   if (resp.success && resp.data && ev.host) {
@@ -793,8 +798,7 @@ chrome.storage.local.get(['dryRunMode'], (result) => {
     chrome.action.setBadgeText({ text: 'DRY' });
     chrome.action.setBadgeBackgroundColor({ color: '#FF9800' });
   } else {
-    chrome.action.setBadgeText({ text: 'LIVE' });
-    chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+    chrome.action.setBadgeText({ text: '' });
   }
 });
 
@@ -804,8 +808,7 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
       chrome.action.setBadgeText({ text: 'DRY' });
       chrome.action.setBadgeBackgroundColor({ color: '#FF9800' });
     } else {
-      chrome.action.setBadgeText({ text: 'LIVE' });
-      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+      chrome.action.setBadgeText({ text: '' });
     }
   }
 });

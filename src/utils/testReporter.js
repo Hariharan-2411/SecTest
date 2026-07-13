@@ -107,19 +107,19 @@ export class TestReporter {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>SecureInspect - Coverage Report</title>
+    <title>Iris - Coverage Report</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
         .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; }
-        h1 { color: #667eea; }
-        h2 { color: #764ba2; margin-top: 30px; }
+        h1 { color: #3B5BDB; }
+        h2 { color: #2743A8; margin-top: 30px; }
         .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }
-        .stat-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; }
+        .stat-card { background: linear-gradient(135deg, #3B5BDB 0%, #2743A8 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; }
         .stat-value { font-size: 36px; font-weight: bold; }
         .stat-label { font-size: 14px; opacity: 0.9; }
         table { width: 100%; border-collapse: collapse; margin: 20px 0; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background: #667eea; color: white; }
+        th { background: #3B5BDB; color: white; }
         .success { color: #4caf50; font-weight: bold; }
         .failed { color: #f44336; font-weight: bold; }
         .screenshot { max-width: 300px; border: 2px solid #ddd; border-radius: 4px; margin: 10px; }
@@ -127,7 +127,7 @@ export class TestReporter {
 </head>
 <body>
     <div class="container">
-        <h1>🔒 SecureInspect - Coverage Report</h1>
+        <h1>Iris - Coverage Report</h1>
         <p><strong>Generated:</strong> ${report.timestamp}</p>
         <p><strong>URL:</strong> ${report.url}</p>
 

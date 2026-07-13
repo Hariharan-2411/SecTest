@@ -56,19 +56,21 @@ describe('useTheme', () => {
     setupMatchMedia(false);
   });
 
-  it('defaults to dark and applies data-theme="dark"', () => {
+  it('defaults to light and applies data-theme="light"', () => {
     setupChrome({});
     act(() => {
       render(<Harness />);
     });
-    expect(screen.getByTestId('theme').textContent).toBe('dark');
-    expect(dataTheme()).toBe('dark');
+    expect(screen.getByTestId('theme').textContent).toBe('light');
+    expect(dataTheme()).toBe('light');
   });
 
   it('setTheme("light") applies light and persists to chrome.storage', () => {
     const store = setupChrome({});
     act(() => render(<Harness />));
-    act(() => screen.getByText('light').click());
+    // Target the button specifically — the theme <span> also reads "light" now
+    // that light is the default, so getByText would be ambiguous.
+    act(() => screen.getByRole('button', { name: 'light' }).click());
     expect(dataTheme()).toBe('light');
     expect(chrome.storage.local.set).toHaveBeenCalledWith({ theme: 'light' });
     expect(store.theme).toBe('light');

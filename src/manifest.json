@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "SecureInspect - Form Security Tester",
+  "name": "Iris - Web Form Security Inspector",
   "version": "1.0.0",
-  "description": "SecureInspect: Professional security testing tool for enumerating and testing web forms with guardrails and audit logging",
+  "description": "Iris inspects and tests web forms for security issues — with guardrails, audit logging, and clear, plain-language findings.",
   "background": { "service_worker": "background.bundle.js" },
   "action": {
     "default_popup": "popup.html",

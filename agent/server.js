@@ -294,7 +294,7 @@ async function handle(req, res) {
 
     // The gate: target must be in scope, checked HERE, server-side.
     const ev = evaluateTarget(body.target, scope);
-    if (!ev.allowed) return send(res, 403, { error: 'out_of_scope', reason: ev.reason, host: ev.host });
+    if (!ev.allowed) return send(res, 403, { error: ev.reason, host: ev.host });
 
     if (!binExists(def.bin)) return send(res, 501, { error: 'tool_not_installed', tool: body.tool });
     if (!rateOk()) return send(res, 429, { error: 'rate_limited' });
@@ -332,7 +332,7 @@ async function handle(req, res) {
     if (!body || !body.target) return send(res, 400, { error: 'missing_target' });
     // A watch can only target something in scope — checked here.
     const ev = evaluateTarget(body.target, scope);
-    if (!ev.allowed) return send(res, 403, { error: 'out_of_scope', reason: ev.reason, host: ev.host });
+    if (!ev.allowed) return send(res, 403, { error: ev.reason, host: ev.host });
     // Validate requested tools exist + are permitted.
     const tools = (Array.isArray(body.tools) ? body.tools : []).filter((t) => TOOLS[t]);
     if (tools.some((t) => TOOLS[t].risk === 'active' && !ALLOW_ACTIVE)) {
