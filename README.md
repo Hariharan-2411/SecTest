@@ -110,6 +110,11 @@ below-threshold findings so they never become drafts, and every draft it does
 produce shows its `**Confidence:** 82% (likely)` line — with a ⚠ warning banner
 if a draft is built from a weak finding.
 
+The **Findings tab** scores every row and shows its `confidence% · band`, and
+**escalation skips `noise`** findings (`canEscalateFinding`) so the AI planner
+isn't spent on likely false positives — `tentative` and up stay escalatable,
+since escalation exists to strengthen uncertain findings.
+
 This keeps false positives out of reports — noisy submissions destroy platform
 reputation. See [the design spec](docs/superpowers/specs/2026-07-12-validation-gate-design.md).
 
