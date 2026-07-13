@@ -1,5 +1,10 @@
 import { describe, it, expect } from '@jest/globals';
-import { buildReport, REPORT_PLATFORMS, SEVERITIES } from '../src/utils/reportBuilder';
+import {
+  buildReport,
+  buildReports,
+  REPORT_PLATFORMS,
+  SEVERITIES,
+} from '../src/utils/reportBuilder';
 
 const finding = {
   title: 'Reflected XSS',
@@ -46,5 +51,73 @@ describe('buildReport', () => {
   it('exposes the standard severities', () => {
     expect(SEVERITIES).toContain('critical');
     expect(SEVERITIES).toContain('informational');
+  });
+});
+
+describe('buildReport — confidence surfacing', () => {
+  it('renders a Confidence meta line when a confidence is supplied', () => {
+    const md = buildReport({ title: 'X', confidence: 82, band: 'likely' });
+    expect(md).toContain('**Confidence:** 82% (likely)');
+  });
+
+  it('derives the band from the confidence when band is omitted', () => {
+    const md = buildReport({ title: 'X', confidence: 70 });
+    expect(md).toContain('**Confidence:** 70% (likely)');
+  });
+
+  it('shows a low-confidence warning banner for a tentative finding', () => {
+    const md = buildReport({ title: 'X', confidence: 34, band: 'tentative' });
+    expect(md).toMatch(/low confidence/i);
+    expect(md).toContain('34%');
+  });
+
+  it('shows no warning banner for a confirmed finding', () => {
+    const md = buildReport({ title: 'X', confidence: 90, band: 'confirmed' });
+    expect(md).not.toMatch(/low confidence/i);
+  });
+
+  it('is backward compatible: no confidence means no Confidence line and no banner', () => {
+    const md = buildReport({ title: 'X' });
+    expect(md).not.toContain('**Confidence:**');
+    expect(md).not.toMatch(/low confidence/i);
+  });
+});
+
+describe('buildReports — gate filter over a findings list', () => {
+  const raw = [
+    {
+      type: 'sqli',
+      oracle: 'boolean',
+      title: 'SQLi',
+      host: 'app.example.com',
+      severity: 'high',
+      evidence: 'x',
+    }, // 80 confirmed
+    {
+      type: 'dom-xss',
+      reflection: 'attribute',
+      title: 'Maybe XSS',
+      host: 'app.example.com',
+    }, // 45 tentative
+  ];
+
+  it('keeps only findings that clear the report threshold and builds their markdown', () => {
+    const out = buildReports(raw, 'hackerone');
+    expect(out).toHaveLength(1);
+    expect(out[0].finding).toBe(raw[0]);
+    expect(out[0].markdown).toContain('# SQLi on app.example.com');
+    expect(out[0].markdown).toContain('**Confidence:** 80% (confirmed)');
+  });
+
+  it('honors a custom minConfidence', () => {
+    const tentativeOnly = [raw[1]];
+    expect(buildReports(tentativeOnly, 'hackerone')).toHaveLength(0); // 45 < default 55
+    expect(
+      buildReports(tentativeOnly, 'hackerone', { minConfidence: 40 })
+    ).toHaveLength(1);
+  });
+
+  it('tolerates a non-array input', () => {
+    expect(buildReports(null)).toEqual([]);
   });
 });

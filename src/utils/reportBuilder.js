@@ -3,6 +3,14 @@
 // Turns a checklist finding + captured evidence into a submission-ready draft in
 // a platform's expected shape. It ONLY formats what you give it — it never
 // fabricates evidence, and the human always reviews and decides to submit.
+//
+// It also carries the validation gate's verdict into the draft: buildReport
+// surfaces a finding's confidence/band (and warns when it's weak), and
+// buildReports runs a raw findings list through the gate so low-confidence
+// findings never become report drafts in the first place.
+
+import { bandFor, scoreFinding, filterForReport } from './validate';
+import { toReportFinding } from './findings';
 
 export const REPORT_PLATFORMS = [
   { id: 'hackerone', label: 'HackerOne' },
@@ -11,7 +19,13 @@ export const REPORT_PLATFORMS = [
 ];
 
 // HackerOne-style severity buckets (CVSS-aligned words).
-export const SEVERITIES = ['critical', 'high', 'medium', 'low', 'informational'];
+export const SEVERITIES = [
+  'critical',
+  'high',
+  'medium',
+  'low',
+  'informational',
+];
 
 /** Normalize a finding into the fields the templates expect. */
 function normalize(finding = {}) {
@@ -28,7 +42,12 @@ function normalize(finding = {}) {
     target: clean(finding.target) || '',
     program: clean(finding.program) || '',
     ref: clean(finding.ref) || '', // WSTG / API / CWE id
-    severity: SEVERITIES.includes(finding.severity) ? finding.severity : 'medium',
+    severity: SEVERITIES.includes(finding.severity)
+      ? finding.severity
+      : 'medium',
+    confidence:
+      typeof finding.confidence === 'number' ? finding.confidence : null,
+    band: typeof finding.band === 'string' ? finding.band : null,
     summary: clean(finding.summary) || '',
     steps: lines(finding.steps),
     impact: clean(finding.impact) || '',
@@ -64,22 +83,36 @@ function referencesBlock(references, ref) {
 export function buildReport(finding = {}, platform = 'hackerone') {
   const f = normalize(finding);
   const titleLine = f.target ? `# ${f.title} on ${f.target}` : `# ${f.title}`;
+  // The validation gate's verdict: derive the band from confidence if not given.
+  const band = f.band || (f.confidence != null ? bandFor(f.confidence) : null);
+  const confidenceLine =
+    f.confidence != null ? `**Confidence:** ${f.confidence}% (${band})` : '';
   const metaLine = [
     f.program && `**Program:** ${f.program}`,
     f.target && `**Target:** ${f.target}`,
     `**Severity:** ${f.severity[0].toUpperCase()}${f.severity.slice(1)}`,
+    confidenceLine,
     f.ref && `**Class:** ${f.ref}`,
   ]
     .filter(Boolean)
     .join('  \n');
+  // Warn (don't block) when a draft is built from a below-report-threshold finding.
+  const lowConfidenceBanner =
+    band === 'tentative' || band === 'noise'
+      ? `\n> ⚠ Low confidence (${
+          f.confidence != null ? f.confidence + '%' : 'unscored'
+        }, ${band}) — verify this finding before drafting a report.`
+      : '';
 
   const summary = f.summary || '_Briefly describe the vulnerability._';
-  const impact = f.impact || '_Describe the real-world impact for this target._';
+  const impact =
+    f.impact || '_Describe the real-world impact for this target._';
 
   if (platform === 'bugcrowd') {
     return [
       titleLine,
       metaLine,
+      lowConfidenceBanner,
       '\n## Vulnerability Details',
       summary,
       '\n## Steps to Reproduce',
@@ -99,6 +132,7 @@ export function buildReport(finding = {}, platform = 'hackerone') {
     return [
       titleLine,
       metaLine,
+      lowConfidenceBanner,
       '\n## Summary',
       summary,
       '\n## Steps to Reproduce',
@@ -117,6 +151,7 @@ export function buildReport(finding = {}, platform = 'hackerone') {
   return [
     titleLine,
     metaLine,
+    lowConfidenceBanner,
     '\n## Summary',
     summary,
     '\n## Steps To Reproduce',
@@ -130,4 +165,35 @@ export function buildReport(finding = {}, platform = 'hackerone') {
   ]
     .filter((s) => s !== '')
     .join('\n');
+}
+
+/**
+ * Build report drafts for a RAW findings list, gated by the validation engine.
+ * Findings below the confidence threshold never become drafts — the whole point
+ * of the gate (false positives out of reports). Each survivor's draft carries
+ * its scored confidence/band. Pure: scores and formats, executes nothing.
+ *
+ * @param {object[]} findings  raw Findings (carry type + evidence to score on)
+ * @param {string}   platform  one of REPORT_PLATFORMS ids
+ * @param {{minConfidence?: number}} opts  gate threshold override
+ * @returns {{finding: object, markdown: string}[]}
+ */
+export function buildReports(
+  findings,
+  platform = 'hackerone',
+  { minConfidence } = {}
+) {
+  const kept = filterForReport(
+    findings,
+    minConfidence != null ? { minConfidence } : {}
+  );
+  return kept.map((finding) => {
+    const v = scoreFinding(finding);
+    const shaped = {
+      ...toReportFinding(finding),
+      confidence: v.confidence,
+      band: v.band,
+    };
+    return { finding, markdown: buildReport(shaped, platform) };
+  });
 }

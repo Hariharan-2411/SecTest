@@ -104,6 +104,12 @@ out-of-band callback:
   (which existing escalation verb would raise confidence) — the LLM never moves
   the number, it only narrates it.
 
+The **report builder is gated on it**: `buildReports(findings, platform)`
+([`src/utils/reportBuilder.js`](src/utils/reportBuilder.js)) filters out
+below-threshold findings so they never become drafts, and every draft it does
+produce shows its `**Confidence:** 82% (likely)` line — with a ⚠ warning banner
+if a draft is built from a weak finding.
+
 This keeps false positives out of reports — noisy submissions destroy platform
 reputation. See [the design spec](docs/superpowers/specs/2026-07-12-validation-gate-design.md).
 
