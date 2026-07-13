@@ -88,6 +88,25 @@ The popup is organized into tabs: **Scan · Payloads · Recon · Checklist · Pr
   - HTML report with statistics
   - Visual charts and summaries
 
+### Validation Gate (confidence scoring)
+
+Before a finding reaches a report or the escalation engine, it passes through a
+**pure, deterministic validation gate** ([`src/utils/validate.js`](src/utils/validate.js)) that scores its
+**confidence 0–100%** from the evidence already collected — reflection context,
+oracle differential/timing, tainted DOM sink, secret pattern + entropy, or an
+out-of-band callback:
+
+- **Bands:** `confirmed ≥ 80 · likely 55–79 · tentative 30–54 · noise < 30`.
+- **Never deletes.** Low-confidence findings are tagged and kept in a
+  low-confidence view; only `likely`+ reach the report by default.
+- **Never trusts the input.** Any caller-supplied confidence is recomputed.
+- **Points the way.** Each finding carries `reasons[]` (why) and `needMore[]`
+  (which existing escalation verb would raise confidence) — the LLM never moves
+  the number, it only narrates it.
+
+This keeps false positives out of reports — noisy submissions destroy platform
+reputation. See [the design spec](docs/superpowers/specs/2026-07-12-validation-gate-design.md).
+
 ### Optional AI (Ollama) 🚀
 
 - Local-only LLM via Ollama for payload suggestion
