@@ -86,8 +86,7 @@ describe('buildReport — confidence surfacing', () => {
 describe('buildReports — gate filter over a findings list', () => {
   const raw = [
     {
-      type: 'sqli',
-      oracle: 'boolean',
+      type: 'sqli-boolean',
       title: 'SQLi',
       host: 'app.example.com',
       severity: 'high',

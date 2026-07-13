@@ -66,31 +66,32 @@ describe('scoreFinding — dom-xss / reflection', () => {
     expect(r.confidence).toBe(30);
     expect(r.needMore).toContain('confirm_reflection');
   });
+
+  it('a real taint finding (source->sink, no reflection field) is likely', () => {
+    const r = scoreFinding({
+      type: 'dom-xss',
+      sink: 'innerHTML',
+      sources: ['location.hash'],
+    });
+    expect(r.confidence).toBe(55); // 30 + 25 tainted-sink bonus
+    expect(r.band).toBe('likely');
+    // The sink flow is the evidence — don't nag to confirm reflection.
+    expect(r.needMore).not.toContain('confirm_reflection');
+  });
 });
 
-describe('scoreFinding — injection oracles', () => {
-  it('a boolean differential is confirmed (80)', () => {
-    expect(scoreFinding({ type: 'sqli', oracle: 'boolean' }).confidence).toBe(
-      80
-    );
-    expect(scoreFinding({ type: 'cmdi', oracle: 'boolean' }).confidence).toBe(
-      80
-    );
+describe('scoreFinding — injection oracles (real sqli-* types)', () => {
+  it('a boolean-based differential is confirmed (80)', () => {
+    expect(scoreFinding({ type: 'sqli-boolean' }).confidence).toBe(80);
+    expect(scoreFinding({ type: 'sqli-boolean' }).band).toBe('confirmed');
   });
 
   it('a time-based signal is likely, flags timing noise, and asks for a differential probe', () => {
-    const r = scoreFinding({ type: 'sqli', oracle: 'time' });
+    const r = scoreFinding({ type: 'sqli-time' });
     expect(r.confidence).toBe(65); // 30 + 35
     expect(r.band).toBe('likely');
     expect(r.needMore).toContain('differential_probe');
     expect(r.reasons.join(' ')).toMatch(/nois/i);
-  });
-
-  it('a null oracle result is noise and asks for a differential probe', () => {
-    const r = scoreFinding({ type: 'sqli', oracle: 'none' });
-    expect(r.confidence).toBe(10); // 30 - 20
-    expect(r.band).toBe('noise');
-    expect(r.needMore).toContain('differential_probe');
   });
 });
 
@@ -132,7 +133,7 @@ describe('scoreFinding — oob and headers', () => {
   });
 
   it('a header finding is low and can never exceed the header cap', () => {
-    const r = scoreFinding({ type: 'headers' });
+    const r = scoreFinding({ type: 'header' });
     expect(r.confidence).toBe(35);
     expect(r.confidence).toBeLessThanOrEqual(RULES.headersCap);
     expect(r.band).toBe('tentative');
@@ -159,7 +160,7 @@ describe('scoreFinding — safety & purity', () => {
     for (const f of [
       { type: 'dom-xss', reflection: 'js', sink: 'eval', sources: ['x'] },
       { type: 'dom-xss', reflection: 'none' },
-      { type: 'sqli', oracle: 'none' },
+      { type: 'sqli-boolean' },
     ]) {
       const c = scoreFinding(f).confidence;
       expect(c).toBeGreaterThanOrEqual(0);
@@ -171,8 +172,7 @@ describe('scoreFinding — safety & purity', () => {
     const verbs = new Set(Object.keys(ACTION_VERBS));
     const samples = [
       { type: 'dom-xss', reflection: 'attribute' },
-      { type: 'sqli', oracle: 'time' },
-      { type: 'sqli', oracle: 'none' },
+      { type: 'sqli-time' },
       { type: 'oob', oobHit: false },
       { type: 'quantum_bug' },
     ];
@@ -201,8 +201,8 @@ describe('validateFinding — annotation without mutation', () => {
 
   it('validateFindings maps a list and tolerates a non-array', () => {
     const out = validateFindings([
-      { type: 'sqli', oracle: 'boolean' },
-      { type: 'headers' },
+      { type: 'sqli-boolean' },
+      { type: 'header' },
     ]);
     expect(out).toHaveLength(2);
     expect(out[0].validation.band).toBe('confirmed');
@@ -213,10 +213,10 @@ describe('validateFinding — annotation without mutation', () => {
 describe('filterForReport — threshold gate', () => {
   it('keeps findings at or above the default report threshold and drops the rest', () => {
     const findings = [
-      { type: 'sqli', oracle: 'boolean' }, // 80 - kept
-      { type: 'sqli', oracle: 'time' }, // 65 - kept
+      { type: 'sqli-boolean' }, // 80 - kept
+      { type: 'sqli-time' }, // 65 - kept
       { type: 'dom-xss', reflection: 'attribute' }, // 45 - dropped
-      { type: 'headers' }, // 35 - dropped
+      { type: 'header' }, // 35 - dropped
     ];
     const kept = filterForReport(findings);
     expect(kept).toHaveLength(2);
@@ -232,8 +232,8 @@ describe('filterForReport — threshold gate', () => {
 
 describe('canEscalateFinding — band gate', () => {
   it('allows escalation at or above the minimum band, blocks below it', () => {
-    expect(canEscalateFinding({ type: 'sqli', oracle: 'boolean' })).toBe(true); // confirmed
-    expect(canEscalateFinding({ type: 'sqli', oracle: 'time' })).toBe(true); // likely
+    expect(canEscalateFinding({ type: 'sqli-boolean' })).toBe(true); // confirmed
+    expect(canEscalateFinding({ type: 'sqli-time' })).toBe(true); // likely
     expect(
       canEscalateFinding({ type: 'dom-xss', reflection: 'attribute' })
     ).toBe(false); // tentative
@@ -241,10 +241,7 @@ describe('canEscalateFinding — band gate', () => {
 
   it('respects a custom minBand', () => {
     expect(
-      canEscalateFinding(
-        { type: 'sqli', oracle: 'time' },
-        { minBand: 'confirmed' }
-      )
+      canEscalateFinding({ type: 'sqli-time' }, { minBand: 'confirmed' })
     ).toBe(false);
     expect(
       canEscalateFinding(

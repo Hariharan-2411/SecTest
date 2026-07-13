@@ -42,7 +42,8 @@ export const RULES = {
   taintedSinkBonus: 25,
 
   injectionBase: 30,
-  oracle: { boolean: 50, time: 35, none: -20 },
+  // Applied by finding type: 'sqli-boolean' (strong) vs 'sqli-time' (noisier).
+  oracle: { boolean: 50, time: 35 },
 
   secretBase: {
     aws_access_key: 78,
@@ -113,37 +114,36 @@ function scoreSecret(finding, reasons) {
 function scoreDomXss(finding, reasons, needMore) {
   let score = RULES.domXssBase;
   const ctx = finding.reflection;
+  const tainted = hasTaintedSink(finding);
   if (ctx && Object.prototype.hasOwnProperty.call(RULES.reflection, ctx)) {
     score += RULES.reflection[ctx];
     reasons.push(`reflection context: ${ctx}`);
     if (ctx !== 'js' && ctx !== 'html-body')
       pushVerb(needMore, 'confirm_reflection');
-  } else {
-    reasons.push('no reflection context observed yet');
+  } else if (!tainted) {
+    // No reflection evidence AND no tainted sink — reachability is unconfirmed.
+    reasons.push('no reflection context or tainted sink observed yet');
     pushVerb(needMore, 'confirm_reflection');
   }
-  if (hasTaintedSink(finding)) {
+  if (tainted) {
+    // A DOM source flowing to a dangerous sink is the core DOM-XSS evidence.
     score += RULES.taintedSinkBonus;
     reasons.push(`tainted source flows to sink "${finding.sink}"`);
   }
   return score;
 }
 
-function scoreInjection(finding, reasons, needMore) {
+// Real pipeline encodes the oracle signal in the type ('sqli-boolean'/'sqli-time').
+function scoreInjection(type, reasons, needMore) {
   let score = RULES.injectionBase;
-  const cls = finding.oracle;
-  if (cls === 'boolean') {
-    score += RULES.oracle.boolean;
-    reasons.push('boolean differential responded to the payload');
-  } else if (cls === 'time') {
+  if (type === 'sqli-time') {
     score += RULES.oracle.time;
-    reasons.push('time-based signal observed');
+    reasons.push('time-based blind SQLi signal observed');
     reasons.push('timing can be noisy — corroborate');
     pushVerb(needMore, 'differential_probe');
   } else {
-    score += RULES.oracle.none;
-    reasons.push('no differential observed');
-    pushVerb(needMore, 'differential_probe');
+    score += RULES.oracle.boolean;
+    reasons.push('boolean-based differential responded to the payload');
   }
   return score;
 }
@@ -163,8 +163,8 @@ export function scoreFinding(finding = {}) {
     pushVerb(needMore, 'manual');
   } else if (type === 'dom-xss') {
     score = scoreDomXss(finding, reasons, needMore);
-  } else if (type === 'sqli' || type === 'cmdi') {
-    score = scoreInjection(finding, reasons, needMore);
+  } else if (type === 'sqli-boolean' || type === 'sqli-time') {
+    score = scoreInjection(type, reasons, needMore);
   } else if (type === 'oob') {
     score = RULES.oobBase;
     if (finding.oobHit) {
@@ -174,7 +174,7 @@ export function scoreFinding(finding = {}) {
       reasons.push('no out-of-band callback yet');
       pushVerb(needMore, 'manual');
     }
-  } else if (type === 'headers') {
+  } else if (type === 'header') {
     score = Math.min(RULES.headersBase, RULES.headersCap);
     reasons.push('missing/weak header is a signal, not a demonstrated vuln');
   } else {
