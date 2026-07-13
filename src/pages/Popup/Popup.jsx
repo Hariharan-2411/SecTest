@@ -13,6 +13,7 @@ import { taintFindings } from '../../utils/taint';
 import { sortFindings, summarizeFindings, dedupeFindings } from '../../utils/findings';
 import { validateFindings, scoreFinding, canEscalateFinding, BANDS } from '../../utils/validate';
 import { fallbackProse, explainConfidence } from '../../utils/validateProse';
+import { proposeChains } from '../../utils/chains';
 import { normalizePlan, mapStepToAction, isSafeStep, canEscalate, remainingBudget, DEFAULT_ESCALATION_BUDGET } from '../../utils/escalation';
 import { assembleContext } from '../../utils/escalationContext';
 import { buildReport, REPORT_PLATFORMS, SEVERITIES } from '../../utils/reportBuilder';
@@ -279,6 +280,8 @@ const Popup = () => {
   const [aiReportBusy, setAiReportBusy] = useState(''); // '' | 'draft' | 'triage'
   const [escalation, setEscalation] = useState(null); // { finding, steps, rejected, depth } — AI escalation plan
   const [escalationBusy, setEscalationBusy] = useState(false);
+  const [chains, setChains] = useState(null); // { chains, rejected, source } — AI-proposed exploit chains
+  const [chainsBusy, setChainsBusy] = useState(false);
   const [escBudgetUsed, setEscBudgetUsed] = useState(0); // escalation steps executed this session (loop cap)
   // Phase 2: monitoring / tracker state
   const [jsScanResult, setJsScanResult] = useState(null);
@@ -544,6 +547,23 @@ const Popup = () => {
       if (source !== 'llm') return;
       setReportDraft((prev) => (prev && prev._proseToken === proseToken ? { ...prev, rationale: prose } : prev));
     });
+  };
+
+  // Ask the AI to propose exploit chains across the current findings, then show
+  // only the ones the pure layer could ground against real findings + scope.
+  const runProposeChains = async () => {
+    const all = findingsCrossHost ? Object.values(findings).flat() : ((currentHost && findings[currentHost]) || []);
+    const list = dedupeFindings(all, { crossHost: findingsCrossHost });
+    if (!list.length) { toast.info('No findings to chain yet.'); return; }
+    setChainsBusy(true);
+    try {
+      const res = await proposeChains(list, { model: aiModel, scope });
+      if (res.source === 'error') { toast.error('Chain proposal failed — AI unavailable or returned no valid JSON.'); return; }
+      if (!res.chains.length) { toast.info('No grounded chains proposed.'); return; }
+      setChains(res);
+    } finally {
+      setChainsBusy(false);
+    }
   };
 
   // ── AI escalation pipeline (Phase 3) ─────────────────────────────
@@ -2621,6 +2641,7 @@ const Popup = () => {
             <div className="checklist-head">
               <h3>Findings {currentHost && !findingsCrossHost && <span className="muted">· {currentHost}</span>}</h3>
               <div style={{ display: 'flex', gap: 8 }}>
+                <button className="link-btn" onClick={runProposeChains} disabled={chainsBusy || scored.length === 0} title="Ask AI to propose exploit chains across these findings (human-verified, nothing runs)">{chainsBusy ? '🔗 Proposing…' : '🔗 Propose chains'}</button>
                 <button className="link-btn" onClick={refreshFindings}>Refresh</button>
                 <button className="link-btn" onClick={() => clearFindingsForHost(currentHost)} disabled={!currentHost || !findings[currentHost]}>Clear host</button>
               </div>
@@ -3525,6 +3546,39 @@ const Popup = () => {
         </div>
         );
       })()}
+
+      {chains && (
+        <div className="modal-overlay">
+          <div className="modal report-modal">
+            <div className="checklist-head">
+              <h3>Proposed Chains <span className="muted">· {chains.chains.length}</span></h3>
+              <button className="link-btn" onClick={() => setChains(null)}>Close</button>
+            </div>
+            <p className="checklist-sub">
+              AI-proposed exploit chains across your findings. Every step is grounded in a real, in-scope finding — but these are hypotheses. Verify before reporting; nothing here runs.
+            </p>
+            <div className="find-list">
+              {chains.chains.map((c) => (
+                <div key={c.id} className={`find-card sev-${c.severity}`}>
+                  <div className="find-card-top">
+                    <span className={`find-sevtag sev-${c.severity}`}>{c.severity}</span>
+                    <strong className="find-card-title">{c.title}</strong>
+                  </div>
+                  <div className="find-card-meta">
+                    <span className="find-type">{c.steps.map((s) => s.type).join(' → ')}</span>
+                    {c.aiCvss && <span className="find-conf" title="AI-proposed CVSS — unverified">{c.aiCvss}</span>}
+                  </div>
+                  {c.rationale && <div className="muted" style={{ fontSize: 11, lineHeight: 1.4, marginTop: 4 }}>{c.rationale}</div>}
+                  <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>AI-proposed · verify before reporting</div>
+                </div>
+              ))}
+            </div>
+            <div className="report-foot muted">
+              Hypotheses only — confirm each chain yourself before reporting.
+            </div>
+          </div>
+        </div>
+      )}
 
       {escalation && (
         <div className="modal-overlay">

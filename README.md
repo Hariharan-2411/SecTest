@@ -128,6 +128,32 @@ reputation. See the design specs:
 [gate](docs/superpowers/specs/2026-07-12-validation-gate-design.md) ·
 [prose adapter](docs/superpowers/specs/2026-07-12-validation-prose-adapter-design.md).
 
+### Chain hypotheses
+
+[`src/utils/chains.js`](src/utils/chains.js) lets an LLM *propose* exploit chains
+across the finding set (SSRF→metadata→IAM, XSS→cookie→ATO, IDOR→privesc), then
+**validates every proposal against the real findings + scope** before showing it:
+each step must cite a real finding (invented ones dropped), noise-band findings
+can't be links, out-of-scope hosts are dropped, a chain needs ≥2 grounded steps,
+and severity is **derived deterministically** (strongest constituent bumped one
+level) — the model's CVSS is kept only as an unverified display label. Chains are
+**human-verification drafts** — nothing executes or auto-submits. Mirrors
+`escalation.js`'s "never trust the model" contract; see
+[the design spec](docs/superpowers/specs/2026-07-13-chain-hypotheses-design.md).
+
+### Finding enrichment (CWE / CVSS)
+
+[`src/utils/enrich.js`](src/utils/enrich.js) attaches a **CWE** and a **CVSS 3.1
+baseline** to each finding — deterministically and offline. It implements the
+official CVSS 3.1 base-score formula, so each vuln class declares a vector and the
+score is computed correctly (dom-xss→CWE-79/6.1, sqli-*→CWE-89/9.8,
+header→CWE-693, secrets→CWE-798, jwt→CWE-522, oob→CWE-918/SSRF). Enrichment is
+**additive** — it never changes the finding's `severity` or the gate's
+`confidence`; it just gives reports the CWE + CVSS vector reviewers expect.
+EPSS/KEV are CVE-keyed and only carried through when a finding has a `cve` (no
+live lookups). See
+[the design spec](docs/superpowers/specs/2026-07-13-finding-enrichment-design.md).
+
 ### Optional AI (Ollama) 🚀
 
 - Local-only LLM via Ollama for payload suggestion
