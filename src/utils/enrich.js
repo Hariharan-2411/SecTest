@@ -118,6 +118,11 @@ export const CLASS_META = {
     cweName: 'Insufficiently Protected Credentials',
     vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N',
   },
+  'api-spec-exposed': {
+    cwe: 'CWE-200',
+    cweName: 'Exposure of Sensitive Information to an Unauthorized Actor',
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N',
+  },
 };
 
 /**

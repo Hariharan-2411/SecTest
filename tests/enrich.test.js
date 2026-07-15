@@ -81,6 +81,12 @@ describe('enrichFinding — CWE + CVSS metadata', () => {
     expect(r.cvss.severity).toBe('high');
   });
 
+  it('enriches api-spec-exposed with CWE-200 (information exposure)', () => {
+    const r = enrichFinding({ type: 'api-spec-exposed' });
+    expect(r.cwe).toBe('CWE-200');
+    expect(r.cvss.vector).toMatch(/^CVSS:3\.1\//);
+  });
+
   it("leaves cwe/cvss null for an unknown type but doesn't throw", () => {
     const r = enrichFinding({ type: 'quantum_bug' });
     expect(r.cwe).toBeNull();

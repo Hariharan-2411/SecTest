@@ -5,7 +5,16 @@ import {
   normalizeEndpoint,
 } from '../../utils/reconHelpers';
 import { evaluateScope, scopeFromAllowlist } from '../../utils/scope';
-import { mergeObservation } from '../../utils/inventory';
+import { mergeObservation, extractParamsFromUrls } from '../../utils/inventory';
+import {
+  isApiEvent,
+  mergeApiEvent,
+  templatizePath,
+  apiSpecCandidates,
+  parseOpenApi,
+  mergeSpecEndpoints,
+  buildApiFindings,
+} from '../../utils/apisurface';
 import { analyzeHeaders, mergeHeaderFindings } from '../../utils/headers';
 import { upsertFindings as upsertFindingsList } from '../../utils/findings';
 import {
@@ -169,6 +178,115 @@ async function handleHeadersReceived(details) {
   } catch (_) {
     // Observation must never throw into the webRequest pipeline.
   }
+}
+
+// --- Passive API surface discovery (webRequest, observe-only) --------------
+//
+// Folds the URL/method/auth of XHR & fetch traffic the user ALREADY generated
+// on in-scope hosts into a per-host endpoint inventory (routes templated so
+// /users/123 and /users/456 collapse to one). Never blocks, modifies, or issues
+// a request. Writes are throttled per (host, method, route, params) for this
+// worker life so a chatty SPA doesn't hammer storage.
+const seenApiKeys = new Set();
+
+async function recordApiRequest(details) {
+  try {
+    const event = {
+      url: details.url,
+      method: details.method,
+      type: details.type,
+      requestHeaders: details.requestHeaders || [],
+    };
+    if (!isApiEvent(event)) return;
+    const { scope, passiveCapture } = await getSettings();
+    if (!passiveCapture) return;
+    const ev = evaluateScope(details.url, scope);
+    if (!ev.allowed) return;
+
+    const path = templatizePath(details.url);
+    if (!path) return;
+    const params = extractParamsFromUrls([details.url]).sort().join(',');
+    const key = `${ev.host}|${(details.method || 'GET').toUpperCase()} ${path}|${params}`;
+    if (seenApiKeys.has(key)) return; // route+params already recorded this life
+    seenApiKeys.add(key);
+    if (seenApiKeys.size > 4000) seenApiKeys.clear(); // bound memory
+
+    const r = await storageGet(['apiInventory']);
+    const store = r.apiInventory || {};
+    store[ev.host] = mergeApiEvent(store[ev.host] || [], event);
+    await storageSet({ apiInventory: store });
+  } catch (_) {
+    // Observation must never throw into the webRequest pipeline.
+  }
+}
+
+// Read the API inventory for a page's in-scope host (for the Recon → API view).
+async function getApiSurface(pageUrl) {
+  const { scope } = await getSettings();
+  const ev = evaluateScope(pageUrl, scope);
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  const r = await storageGet(['apiInventory']);
+  const inventory = (r.apiInventory || {})[ev.host] || [];
+  return { success: true, host: ev.host, inventory };
+}
+
+// Persist an api-surface (and api-spec-exposed) finding into the unified store.
+async function saveApiFindings(pageUrl, specUrl, specEndpoints) {
+  const { scope } = await getSettings();
+  const ev = evaluateScope(pageUrl, scope);
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  const r = await storageGet(['apiInventory']);
+  const inventory = (r.apiInventory || {})[ev.host] || [];
+  const findings = buildApiFindings({
+    host: ev.host,
+    specUrl,
+    specEndpoints,
+    inventory,
+  });
+  await persistFindingsGrouped(findings);
+  return { success: true, host: ev.host, saved: findings.length };
+}
+
+// Active, gated probe for a publicly readable OpenAPI/Swagger spec. Fetches the
+// well-known spec paths (dry-run aware, scope-gated, rate-limited); on a hit it
+// folds the parsed routes into the inventory and records an api-spec-exposed
+// finding. Read-only GETs; no payloads.
+async function probeApiSpec(pageUrl) {
+  const { scope, dryRunMode } = await getSettings();
+  const ev = evaluateScope(pageUrl, scope);
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  const host = ev.host;
+  const candidates = apiSpecCandidates(pageUrl);
+
+  if (dryRunMode) {
+    await appendAudit({ action: 'API_SPEC_PROBE', url: pageUrl, host, result: 'DRY_RUN', dryRun: true, wouldFetch: candidates });
+    return { success: true, dryRun: true, wouldFetch: candidates, host };
+  }
+
+  for (const url of candidates) {
+    if (!(await rateLimiter.canPerformAction())) {
+      return { success: false, reason: 'rate_limited' };
+    }
+    const res = await fetchJsText(url); // full body; JSON.parse needs it whole
+    if (!res.ok || !res.text) continue;
+    let spec = null;
+    try { spec = JSON.parse(res.text); } catch (_) { continue; }
+    const endpoints = parseOpenApi(spec);
+    if (!endpoints.length) continue;
+
+    const invR = await storageGet(['apiInventory']);
+    const invStore = invR.apiInventory || {};
+    invStore[host] = mergeSpecEndpoints(invStore[host] || [], endpoints);
+    await storageSet({ apiInventory: invStore });
+
+    const findings = buildApiFindings({ host, specUrl: url, specEndpoints: endpoints, inventory: invStore[host] });
+    await persistFindingsGrouped(findings);
+    await appendAudit({ action: 'API_SPEC_PROBE', url: pageUrl, host, result: 'EXECUTED', dryRun: false, specUrl: url, endpoints: endpoints.length });
+    return { success: true, dryRun: false, host, specUrl: url, endpoints, inventory: invStore[host] };
+  }
+
+  await appendAudit({ action: 'API_SPEC_PROBE', url: pageUrl, host, result: 'EXECUTED', dryRun: false, specUrl: null });
+  return { success: true, dryRun: false, host, specUrl: null, endpoints: [] };
 }
 
 function appendAudit(entry) {
@@ -712,6 +830,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // async
   }
 
+  if (request.action === 'getApiSurface') {
+    getApiSurface(request.pageUrl)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'probeApiSpec') {
+    probeApiSpec(request.pageUrl)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'saveApiFindings') {
+    saveApiFindings(request.pageUrl, request.specUrl, request.specEndpoints)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
   if (request.action === 'agentHealth') {
     agentHealth().then(sendResponse).catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
     return true; // async
@@ -764,6 +903,25 @@ try {
       (details) => { handleHeadersReceived(details); },
       { urls: ['http://*/*', 'https://*/*'], types: ['main_frame', 'sub_frame', 'xmlhttprequest'] },
       ['responseHeaders']
+    );
+  } catch (_) {}
+}
+
+// Passive API surface discovery: observe request line + headers of XHR/fetch on
+// in-scope hosts. requestHeaders (+extraHeaders) let us note whether the call
+// carried auth; observe-only, never blocking.
+try {
+  chrome.webRequest.onSendHeaders.addListener(
+    (details) => { recordApiRequest(details); },
+    { urls: ['http://*/*', 'https://*/*'], types: ['xmlhttprequest'] },
+    ['requestHeaders', 'extraHeaders']
+  );
+} catch (_) {
+  try {
+    chrome.webRequest.onSendHeaders.addListener(
+      (details) => { recordApiRequest(details); },
+      { urls: ['http://*/*', 'https://*/*'], types: ['xmlhttprequest'] },
+      ['requestHeaders']
     );
   } catch (_) {}
 }

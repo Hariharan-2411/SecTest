@@ -273,6 +273,8 @@ const Popup = () => {
   const [scopeOutText, setScopeOutText] = useState('');
   const [passiveCapture, setPassiveCapture] = useState(true);
   const [inventory, setInventory] = useState({}); // { [host]: inv }
+  const [apiInventory, setApiInventory] = useState({}); // { [host]: [{method,path,params,hasAuth,count}] }
+  const [apiBusy, setApiBusy] = useState(false); // spec probe in flight
   const [headerFindings, setHeaderFindings] = useState({}); // { [host]: {url, checkedAt, findings} }
   const [findings, setFindings] = useState({}); // unified findings store { [host]: Finding[] }
   const [findingsCrossHost, setFindingsCrossHost] = useState(false); // dedup across a program's subdomains
@@ -345,11 +347,12 @@ const Popup = () => {
   useEffect(() => {
     // Load settings from storage
     chrome.storage.local.get(
-      ['allowlist', 'scope', 'passiveCapture', 'inventory', 'headerFindings', 'findings', 'dryRunMode', 'auditLog', 'aiModel', 'checklistStore',
+      ['allowlist', 'scope', 'passiveCapture', 'inventory', 'apiInventory', 'headerFindings', 'findings', 'dryRunMode', 'auditLog', 'aiModel', 'checklistStore',
        'jsWatch', 'programs', 'submissions', 'notifyConfig', 'jsMonitor', 'agentConfig'],
       (result) => {
         setJsWatch(result.jsWatch || {});
         setHeaderFindings(result.headerFindings || {});
+        setApiInventory(result.apiInventory || {});
         setFindings(result.findings || {});
         setPrograms(result.programs || []);
         setSubmissions(result.submissions || []);
@@ -467,10 +470,37 @@ const Popup = () => {
   };
 
   const refreshInventory = () => {
-    chrome.storage.local.get(['inventory', 'headerFindings', 'findings'], (r) => {
+    chrome.storage.local.get(['inventory', 'apiInventory', 'headerFindings', 'findings'], (r) => {
       setInventory(r.inventory || {});
+      setApiInventory(r.apiInventory || {});
       setHeaderFindings(r.headerFindings || {});
       setFindings(r.findings || {});
+    });
+  };
+
+  // Active, gated probe for a publicly readable OpenAPI/Swagger spec. Folds any
+  // parsed routes into the API inventory and records an api-spec-exposed finding.
+  const runProbeApiSpec = () => {
+    if (!isHostAllowed(currentUrl)) { toast.error('Target is out of scope.'); return; }
+    setApiBusy(true);
+    chrome.runtime.sendMessage({ action: 'probeApiSpec', pageUrl: currentUrl }, (resp) => {
+      void chrome.runtime.lastError;
+      setApiBusy(false);
+      if (!resp || !resp.success) { toast.error('Spec probe failed: ' + ((resp && resp.reason) || 'unknown')); return; }
+      if (resp.dryRun) { toast.info(`Dry run — would fetch ${resp.wouldFetch.length} spec path(s). Turn off Dry Run to probe.`); return; }
+      if (resp.specUrl) toast.success(`Found API spec (${resp.endpoints.length} endpoints) — saved as a finding.`);
+      else toast.info('No readable API spec at the well-known paths.');
+      refreshInventory();
+    });
+  };
+
+  // Persist the observed API surface (and any found spec) as findings.
+  const saveApiSurface = () => {
+    if (!isHostAllowed(currentUrl)) { toast.error('Target is out of scope.'); return; }
+    chrome.runtime.sendMessage({ action: 'saveApiFindings', pageUrl: currentUrl }, (resp) => {
+      void chrome.runtime.lastError;
+      if (resp && resp.success) { toast.success(`Saved ${resp.saved} finding(s).`); refreshInventory(); }
+      else toast.error('Save failed: ' + ((resp && resp.reason) || 'unknown'));
     });
   };
 
@@ -2251,6 +2281,58 @@ const Popup = () => {
                   </details>
                 )}
                 {sum.updatedAt && <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>Updated {new Date(sum.updatedAt).toLocaleString()}</div>}
+              </div>
+            );
+          })()}
+
+          {(() => {
+            const eps = (currentHost && apiInventory[currentHost]) || [];
+            const withAuth = eps.filter((e) => e.hasAuth).length;
+            return (
+              <div className="inventory-section">
+                <div className="checklist-head">
+                  <h3>API Surface {currentHost && <span className="muted">· {currentHost}</span>}</h3>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="link-btn" onClick={refreshInventory}>Refresh</button>
+                    <button className="link-btn" onClick={saveApiSurface} disabled={!eps.length}>Save to Findings</button>
+                  </div>
+                </div>
+                <p className="checklist-sub">
+                  REST/JSON endpoints seen passively in XHR &amp; fetch traffic as you browse in-scope pages
+                  (routes templated, so <code>/users/123</code> and <code>/users/456</code> collapse to one).
+                </p>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <button className="btn-small" onClick={runProbeApiSpec} disabled={apiBusy || !isHostAllowed(currentUrl)} title="Fetch well-known OpenAPI/Swagger paths (gated by scope + Dry Run)">
+                    {apiBusy ? 'Probing…' : 'Probe API spec'}
+                  </button>
+                  <span className="muted" style={{ fontSize: 10, alignSelf: 'center' }}>
+                    {eps.length} endpoint{eps.length === 1 ? '' : 's'}{withAuth ? ` · ${withAuth} with auth` : ''}
+                  </span>
+                </div>
+                {eps.length === 0 ? (
+                  <div className="recon-empty">
+                    <span className="recon-empty-icon"><IconChevron /></span>
+                    <p className="recon-empty-title">No API traffic captured yet</p>
+                    <p className="recon-empty-sub">
+                      {passiveCapture
+                        ? 'Browse an in-scope app that calls a JSON API and endpoints appear here — or Probe API spec above to pull them from an exposed OpenAPI/Swagger doc.'
+                        : 'Passive capture is off. Enable it in Config, then browse in-scope pages that call an API.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="inv-list">
+                    {eps.slice(0, 300).map((e, i) => (
+                      <div key={i} className="inv-list-item" style={{ display: 'block' }}>
+                        <span className="tag tag-fw">{e.method}</span> <code>{e.path}</code>
+                        {e.hasAuth && <span className="tag" title="Request carried an Authorization/Cookie/API-key header">auth</span>}
+                        {e.fromSpec && <span className="muted" style={{ fontSize: 10 }}> · spec</span>}
+                        {e.params && e.params.length > 0 && (
+                          <span className="muted" style={{ fontSize: 10 }}> — {e.params.join(', ')}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })()}

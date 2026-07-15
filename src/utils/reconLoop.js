@@ -14,9 +14,9 @@ import {
   RISK_POLICY,
   DEFAULT_RECON_BUDGET,
   normalizeReconPlan,
-  rankTriage,
 } from './reconAgent';
 import { executeReconTool } from './reconExecutor';
+import { finalizeTriage } from './reconTriage';
 import * as ai from './aiProvider';
 
 export const MAX_RECON_DEPTH = 6;
@@ -214,8 +214,12 @@ export async function runReconLoop({
   } catch (_) {
     /* never throw — return what we have */
   }
+  // Finalize through the finding-intelligence layer: validate → enrich → rank.
+  const t = finalizeTriage(context.findings);
   return {
-    triage: rankTriage(context.findings),
+    triage: t.ranked,
+    reportworthy: t.reportworthy,
+    summary: t.summary,
     findings: context.findings,
     surface: context.surface,
     executed: context.executed,

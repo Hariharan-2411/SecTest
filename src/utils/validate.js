@@ -66,6 +66,10 @@ export const RULES = {
   oobBase: 40,
   oobHitBonus: 55,
 
+  // A nuclei template match is a curated known-vuln signature — high-signal, but
+  // still human-verified (nuclei has some false positives).
+  nucleiBase: 75,
+
   unknownBase: 35,
 };
 
@@ -177,6 +181,9 @@ export function scoreFinding(finding = {}) {
   } else if (type === 'header') {
     score = Math.min(RULES.headersBase, RULES.headersCap);
     reasons.push('missing/weak header is a signal, not a demonstrated vuln');
+  } else if (type === 'nuclei') {
+    score = RULES.nucleiBase;
+    reasons.push('nuclei template matched (curated known-vuln signature)');
   } else {
     score = RULES.unknownBase;
     reasons.push(

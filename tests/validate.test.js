@@ -138,6 +138,12 @@ describe('scoreFinding — oob and headers', () => {
     expect(r.confidence).toBeLessThanOrEqual(RULES.headersCap);
     expect(r.band).toBe('tentative');
   });
+
+  it('a nuclei template match scores as likely (high-signal, human-verified)', () => {
+    const r = scoreFinding({ type: 'nuclei', severity: 'critical' });
+    expect(r.confidence).toBe(75);
+    expect(r.band).toBe('likely');
+  });
 });
 
 describe('scoreFinding — safety & purity', () => {
