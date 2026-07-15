@@ -119,4 +119,45 @@ describe('buildReports — gate filter over a findings list', () => {
   it('tolerates a non-array input', () => {
     expect(buildReports(null)).toEqual([]);
   });
+
+  it('carries CWE/CVSS enrichment into batch report drafts', () => {
+    const out = buildReports(
+      [
+        {
+          type: 'sqli-boolean',
+          title: 'SQLi',
+          host: 'app.example.com',
+          severity: 'high',
+          evidence: 'x',
+        },
+      ],
+      'hackerone'
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].markdown).toContain('**CWE:** CWE-89');
+    expect(out[0].markdown).toMatch(/\*\*CVSS:\*\* 9\.8/);
+  });
+});
+
+describe('buildReport — CWE/CVSS enrichment', () => {
+  it('renders CWE and CVSS meta lines when present', () => {
+    const md = buildReport({
+      title: 'X',
+      cwe: 'CWE-89',
+      cvss: {
+        vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',
+        baseScore: 9.8,
+        severity: 'critical',
+      },
+    });
+    expect(md).toContain('**CWE:** CWE-89');
+    expect(md).toMatch(/\*\*CVSS:\*\* 9\.8 \(Critical\)/);
+    expect(md).toContain('CVSS:3.1/AV:N');
+  });
+
+  it('omits CWE/CVSS lines when absent (backward compatible)', () => {
+    const md = buildReport({ title: 'X' });
+    expect(md).not.toContain('**CWE:**');
+    expect(md).not.toContain('**CVSS:**');
+  });
 });

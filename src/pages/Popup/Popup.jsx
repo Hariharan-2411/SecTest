@@ -14,6 +14,7 @@ import { sortFindings, summarizeFindings, dedupeFindings } from '../../utils/fin
 import { validateFindings, scoreFinding, canEscalateFinding, BANDS } from '../../utils/validate';
 import { fallbackProse, explainConfidence } from '../../utils/validateProse';
 import { proposeChains } from '../../utils/chains';
+import { enrichFinding, enrichFindings } from '../../utils/enrich';
 import { normalizePlan, mapStepToAction, isSafeStep, canEscalate, remainingBudget, DEFAULT_ESCALATION_BUDGET } from '../../utils/escalation';
 import { assembleContext } from '../../utils/escalationContext';
 import { buildReport, REPORT_PLATFORMS, SEVERITIES } from '../../utils/reportBuilder';
@@ -520,6 +521,7 @@ const Popup = () => {
   // DOM-XSS candidate). The human still edits and confirms before submitting.
   const draftFromFinding = (f) => {
     const v = scoreFinding(f); // gate verdict → the draft shows confidence + a low-confidence warning
+    const e = enrichFinding(f); // CWE + CVSS baseline for the report meta
     const proseToken = Date.now(); // guards the async rationale upgrade against a stale draft
     setReportDraft({
       platform: 'hackerone',
@@ -529,6 +531,8 @@ const Popup = () => {
       ref: f.ref || '',
       confidence: v.confidence,
       band: v.band,
+      cwe: e.cwe,
+      cvss: e.cvss,
       rationale: fallbackProse(v), // instant deterministic "why"; upgraded by the LLM below if available
       _proseToken: proseToken,
       severity: SEVERITIES.includes(f.severity) ? f.severity : 'medium',
@@ -2613,7 +2617,7 @@ const Popup = () => {
         const hostList = (currentHost && findings[currentHost]) || [];
         const all = findingsCrossHost ? Object.values(findings).flat() : hostList;
         // Score every finding through the validation gate, then sort (so ranking uses the recomputed confidence).
-        const scored = sortFindings(validateFindings(dedupeFindings(all, { crossHost: findingsCrossHost })));
+        const scored = sortFindings(enrichFindings(validateFindings(dedupeFindings(all, { crossHost: findingsCrossHost }))));
         // Confidence threshold: hide findings below the chosen band ('all' shows everything).
         const minConf = BANDS[findingsMinBand] || 0;
         const sorted = minConf ? scored.filter((f) => (f.confidence || 0) >= minConf) : scored;
@@ -2704,6 +2708,7 @@ const Popup = () => {
                         {typeof f.confidence === 'number' && <span className={`find-conf${band ? ` band-${band}` : ''}`}>{f.confidence}%{band ? ` · ${band}` : ''}</span>}
                         {findingsCrossHost && f.host && <span className="find-host">{f.host}</span>}
                         <span className="find-type">{f.type}{f.ref ? ` · ${f.ref}` : ''}</span>
+                        {f.cwe && <span className="find-type" title={f.cvss ? f.cvss.vector : ''}>{f.cwe}{f.cvss ? ` · CVSS ${f.cvss.baseScore}` : ''}</span>}
                       </div>
                       {f.evidence && <code className="find-evidence">{f.evidence}</code>}
                       <div className="find-card-actions">

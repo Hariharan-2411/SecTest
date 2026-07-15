@@ -11,6 +11,7 @@
 
 import { bandFor, scoreFinding, filterForReport } from './validate';
 import { toReportFinding } from './findings';
+import { enrichFinding } from './enrich';
 
 export const REPORT_PLATFORMS = [
   { id: 'hackerone', label: 'HackerOne' },
@@ -48,6 +49,8 @@ function normalize(finding = {}) {
     confidence:
       typeof finding.confidence === 'number' ? finding.confidence : null,
     band: typeof finding.band === 'string' ? finding.band : null,
+    cwe: typeof finding.cwe === 'string' ? finding.cwe : null,
+    cvss: finding.cvss && typeof finding.cvss === 'object' ? finding.cvss : null,
     summary: clean(finding.summary) || '',
     steps: lines(finding.steps),
     impact: clean(finding.impact) || '',
@@ -87,11 +90,18 @@ export function buildReport(finding = {}, platform = 'hackerone') {
   const band = f.band || (f.confidence != null ? bandFor(f.confidence) : null);
   const confidenceLine =
     f.confidence != null ? `**Confidence:** ${f.confidence}% (${band})` : '';
+  const cweLine = f.cwe ? `**CWE:** ${f.cwe}` : '';
+  const cvssLine =
+    f.cvss && typeof f.cvss.baseScore === 'number'
+      ? `**CVSS:** ${f.cvss.baseScore}${f.cvss.severity ? ` (${f.cvss.severity[0].toUpperCase()}${f.cvss.severity.slice(1)})` : ''}${f.cvss.vector ? ` — ${f.cvss.vector}` : ''}`
+      : '';
   const metaLine = [
     f.program && `**Program:** ${f.program}`,
     f.target && `**Target:** ${f.target}`,
     `**Severity:** ${f.severity[0].toUpperCase()}${f.severity.slice(1)}`,
     confidenceLine,
+    cweLine,
+    cvssLine,
     f.ref && `**Class:** ${f.ref}`,
   ]
     .filter(Boolean)
@@ -189,10 +199,13 @@ export function buildReports(
   );
   return kept.map((finding) => {
     const v = scoreFinding(finding);
+    const e = enrichFinding(finding);
     const shaped = {
       ...toReportFinding(finding),
       confidence: v.confidence,
       band: v.band,
+      cwe: e.cwe,
+      cvss: e.cvss,
     };
     return { finding, markdown: buildReport(shaped, platform) };
   });
