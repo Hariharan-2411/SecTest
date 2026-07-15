@@ -24,6 +24,14 @@ import {
   detectBatching,
   buildGraphqlFindings,
 } from '../../utils/graphql';
+import {
+  planParamInjections,
+  classifyReflection,
+  planAuthReplays,
+  classifyAuthReplay,
+  detectIdorCandidates,
+  buildInjectionFindings,
+} from '../../utils/injection';
 import { analyzeHeaders, mergeHeaderFindings } from '../../utils/headers';
 import { upsertFindings as upsertFindingsList } from '../../utils/findings';
 import {
@@ -390,6 +398,94 @@ async function getGraphqlSurface(pageUrl) {
   if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
   const r = await storageGet(['graphqlSurface']);
   const summary = (r.graphqlSurface || {})[ev.host] || null;
+  return { success: true, host: ev.host, summary };
+}
+
+// --- API injection & access-control candidate tests (active, gated) ---------
+//
+// Drives the pure planners in injection.js against the API inventory. ONLY GET
+// endpoints are ever requested (read-only); POST/PUT/DELETE are never fired.
+// Access-control results are CANDIDATES tagged for human review, never verdicts.
+// Gated by scope + Dry Run + rate-limit + audit.
+
+async function fetchStatusLen(url, credentials) {
+  try {
+    const res = await fetch(url, { method: 'GET', redirect: 'follow', credentials });
+    const text = await res.text();
+    return { status: res.status, length: text.length };
+  } catch (e) {
+    return { status: 0, length: 0, error: String(e && e.message) };
+  }
+}
+
+async function runApiInjection(pageUrl) {
+  const { scope, dryRunMode } = await getSettings();
+  const ev = evaluateScope(pageUrl, scope);
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  const host = ev.host;
+  const invR = await storageGet(['apiInventory']);
+  const inventory = (invR.apiInventory || {})[host] || [];
+
+  const injTargets = planParamInjections(inventory, {});
+  const authTargets = planAuthReplays(inventory);
+  const idor = detectIdorCandidates(inventory);
+
+  if (dryRunMode) {
+    await appendAudit({
+      action: 'API_INJECT', url: pageUrl, host, result: 'DRY_RUN', dryRun: true,
+      wouldTest: { injections: injTargets.length, authReplays: authTargets.length, idorCandidates: idor.length },
+    });
+    return { success: true, dryRun: true, host, plan: { injections: injTargets.length, authReplays: authTargets.length, idorCandidates: idor.length } };
+  }
+
+  const inScope = (u) => { try { return evaluateScope(u, scope).allowed; } catch (_) { return false; } };
+
+  // Reflection injection: fetch baseline + payload variant, diff for reflection.
+  const injections = [];
+  for (const t of injTargets) {
+    if (!inScope(t.example)) continue;
+    if (!(await rateLimiter.canPerformAction())) break;
+    const base = await fetchJsText(t.example);
+    if (!(await rateLimiter.canPerformAction())) break;
+    const injUrl = buildVariantUrl(t.example, t.param, t.payload);
+    const inj = await fetchJsText(injUrl);
+    const { reflected } = classifyReflection({ baselineBody: base.text, injectedBody: inj.text, payload: t.payload });
+    if (reflected) injections.push({ method: t.method, path: t.path, param: t.param, family: t.family, payload: t.payload, example: t.example });
+  }
+
+  // Missing-auth: compare an authenticated (ambient-cookie) vs anonymous replay.
+  const auth = [];
+  for (const t of authTargets) {
+    if (!inScope(t.example)) continue;
+    if (!(await rateLimiter.canPerformAction())) break;
+    const authed = await fetchStatusLen(t.example, 'include');
+    if (!(await rateLimiter.canPerformAction())) break;
+    const anon = await fetchStatusLen(t.example, 'omit');
+    const res = classifyAuthReplay({ authed, anon });
+    if (res.candidate) auth.push({ method: t.method, path: t.path, example: t.example, reason: res.reason });
+  }
+
+  const findings = buildInjectionFindings({ host, injections, auth, idor });
+  if (findings.length) await persistFindingsGrouped(findings);
+
+  const summary = { injections, auth, idor, testedAt: new Date().toISOString() };
+  const store = (await storageGet(['apiTests'])).apiTests || {};
+  store[host] = summary;
+  await storageSet({ apiTests: store });
+
+  await appendAudit({
+    action: 'API_INJECT', url: pageUrl, host, result: 'EXECUTED', dryRun: false,
+    injections: injections.length, auth: auth.length, idor: idor.length,
+  });
+  return { success: true, dryRun: false, host, ...summary };
+}
+
+async function getApiTests(pageUrl) {
+  const { scope } = await getSettings();
+  const ev = evaluateScope(pageUrl, scope);
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  const r = await storageGet(['apiTests']);
+  const summary = (r.apiTests || {})[ev.host] || null;
   return { success: true, host: ev.host, summary };
 }
 
@@ -964,6 +1060,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'getGraphqlSurface') {
     getGraphqlSurface(request.pageUrl)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'runApiInjection') {
+    runApiInjection(request.pageUrl)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'getApiTests') {
+    getApiTests(request.pageUrl)
       .then(sendResponse)
       .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
     return true; // async

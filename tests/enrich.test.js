@@ -93,6 +93,12 @@ describe('enrichFinding — CWE + CVSS metadata', () => {
     expect(r.cvss.vector).toMatch(/^CVSS:3\.1\//);
   });
 
+  it('enriches api-auth with CWE-306, api-idor-candidate with CWE-639, api-injection with CWE-74', () => {
+    expect(enrichFinding({ type: 'api-auth' }).cwe).toBe('CWE-306');
+    expect(enrichFinding({ type: 'api-idor-candidate' }).cwe).toBe('CWE-639');
+    expect(enrichFinding({ type: 'api-injection' }).cwe).toBe('CWE-74');
+  });
+
   it("leaves cwe/cvss null for an unknown type but doesn't throw", () => {
     const r = enrichFinding({ type: 'quantum_bug' });
     expect(r.cwe).toBeNull();

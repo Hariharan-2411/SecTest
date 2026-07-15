@@ -128,6 +128,21 @@ export const CLASS_META = {
     cweName: 'Exposure of Sensitive Information to an Unauthorized Actor',
     vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N',
   },
+  'api-auth': {
+    cwe: 'CWE-306',
+    cweName: 'Missing Authentication for Critical Function',
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N',
+  },
+  'api-idor-candidate': {
+    cwe: 'CWE-639',
+    cweName: 'Authorization Bypass Through User-Controlled Key (IDOR)',
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N',
+  },
+  'api-injection': {
+    cwe: 'CWE-74',
+    cweName: 'Improper Neutralization of Special Elements (Injection)',
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N',
+  },
 };
 
 /**

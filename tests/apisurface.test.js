@@ -111,6 +111,8 @@ describe('inventoryFromRequests', () => {
       count: 2,
     });
     expect(inv[0].params.sort()).toEqual(['limit', 'offset']);
+    // keeps the FIRST concrete url as a probe example
+    expect(inv[0].example).toBe('https://x.com/api/users/1?limit=10');
   });
 
   it('keeps distinct method+path pairs separate', () => {

@@ -277,6 +277,8 @@ const Popup = () => {
   const [apiBusy, setApiBusy] = useState(false); // spec probe in flight
   const [graphqlSurface, setGraphqlSurface] = useState({}); // { [host]: {endpoint,introspection,surface,suggestions,batching} }
   const [gqlBusy, setGqlBusy] = useState(false); // graphql probe in flight
+  const [apiTests, setApiTests] = useState({}); // { [host]: {injections,auth,idor,testedAt} }
+  const [injBusy, setInjBusy] = useState(false); // injection tests in flight
   const [headerFindings, setHeaderFindings] = useState({}); // { [host]: {url, checkedAt, findings} }
   const [findings, setFindings] = useState({}); // unified findings store { [host]: Finding[] }
   const [findingsCrossHost, setFindingsCrossHost] = useState(false); // dedup across a program's subdomains
@@ -349,13 +351,14 @@ const Popup = () => {
   useEffect(() => {
     // Load settings from storage
     chrome.storage.local.get(
-      ['allowlist', 'scope', 'passiveCapture', 'inventory', 'apiInventory', 'graphqlSurface', 'headerFindings', 'findings', 'dryRunMode', 'auditLog', 'aiModel', 'checklistStore',
+      ['allowlist', 'scope', 'passiveCapture', 'inventory', 'apiInventory', 'graphqlSurface', 'apiTests', 'headerFindings', 'findings', 'dryRunMode', 'auditLog', 'aiModel', 'checklistStore',
        'jsWatch', 'programs', 'submissions', 'notifyConfig', 'jsMonitor', 'agentConfig'],
       (result) => {
         setJsWatch(result.jsWatch || {});
         setHeaderFindings(result.headerFindings || {});
         setApiInventory(result.apiInventory || {});
         setGraphqlSurface(result.graphqlSurface || {});
+        setApiTests(result.apiTests || {});
         setFindings(result.findings || {});
         setPrograms(result.programs || []);
         setSubmissions(result.submissions || []);
@@ -473,10 +476,11 @@ const Popup = () => {
   };
 
   const refreshInventory = () => {
-    chrome.storage.local.get(['inventory', 'apiInventory', 'graphqlSurface', 'headerFindings', 'findings'], (r) => {
+    chrome.storage.local.get(['inventory', 'apiInventory', 'graphqlSurface', 'apiTests', 'headerFindings', 'findings'], (r) => {
       setInventory(r.inventory || {});
       setApiInventory(r.apiInventory || {});
       setGraphqlSurface(r.graphqlSurface || {});
+      setApiTests(r.apiTests || {});
       setHeaderFindings(r.headerFindings || {});
       setFindings(r.findings || {});
     });
@@ -521,6 +525,23 @@ const Popup = () => {
       if (!resp.endpoint) { toast.info('No GraphQL endpoint at the well-known paths.'); return; }
       if (resp.introspection) toast.success('GraphQL introspection is ENABLED — saved as a finding.');
       else toast.info(`GraphQL endpoint found${resp.suggestions && resp.suggestions.length ? ' (leaks field suggestions)' : ' (introspection off)'}.`);
+      refreshInventory();
+    });
+  };
+
+  // Active, gated injection & access-control candidate tests over the API
+  // inventory. GET-only (read-only); results are candidates for human review.
+  const runInjectionTests = () => {
+    if (!isHostAllowed(currentUrl)) { toast.error('Target is out of scope.'); return; }
+    setInjBusy(true);
+    chrome.runtime.sendMessage({ action: 'runApiInjection', pageUrl: currentUrl }, (resp) => {
+      void chrome.runtime.lastError;
+      setInjBusy(false);
+      if (!resp || !resp.success) { toast.error('Injection tests failed: ' + ((resp && resp.reason) || 'unknown')); return; }
+      if (resp.dryRun) { toast.info(`Dry run — would test ${resp.plan.injections} param(s), ${resp.plan.authReplays} auth replay(s), tag ${resp.plan.idorCandidates} IDOR. Turn off Dry Run to run.`); return; }
+      const n = (resp.injections?.length || 0) + (resp.auth?.length || 0) + (resp.idor?.length || 0);
+      if (n) toast.success(`${resp.injections.length} injection · ${resp.auth.length} missing-auth · ${resp.idor.length} IDOR candidate(s) — saved to Findings.`);
+      else toast.info('No candidates surfaced.');
       refreshInventory();
     });
   };
@@ -2352,6 +2373,78 @@ const Popup = () => {
                         )}
                       </div>
                     ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {(() => {
+            const t = (currentHost && apiTests[currentHost]) || null;
+            const injections = (t && t.injections) || [];
+            const authC = (t && t.auth) || [];
+            const idorC = (t && t.idor) || [];
+            const hasApi = ((currentHost && apiInventory[currentHost]) || []).length > 0;
+            return (
+              <div className="inventory-section">
+                <div className="checklist-head">
+                  <h3>API Tests {currentHost && <span className="muted">· {currentHost}</span>}</h3>
+                  <button className="link-btn" onClick={refreshInventory}>Refresh</button>
+                </div>
+                <p className="checklist-sub">
+                  Active candidate tests over the API inventory — <strong>GET-only</strong> (read-only): reflected-payload
+                  injection, missing-auth replay, and IDOR tagging. Access-control results are <em>candidates for you to verify</em>,
+                  never confirmed bugs.
+                </p>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <button className="btn-small" onClick={runInjectionTests} disabled={injBusy || !isHostAllowed(currentUrl) || !hasApi} title={hasApi ? 'Run gated GET-only candidate tests' : 'Capture some API traffic first (browse the app, or Probe API spec)'}>
+                    {injBusy ? 'Testing…' : 'Run injection tests'}
+                  </button>
+                  {!hasApi && <span className="muted" style={{ fontSize: 10, alignSelf: 'center' }}>No API inventory yet</span>}
+                </div>
+                {!t ? (
+                  <div className="hint">No tests run yet. Build an API inventory above, then Run injection tests (Dry Run shows the plan).</div>
+                ) : (injections.length + authC.length + idorC.length === 0) ? (
+                  <div className="hint">Ran clean — no reflected-injection, missing-auth, or IDOR candidates surfaced.</div>
+                ) : (
+                  <div>
+                    {authC.length > 0 && (
+                      <details className="inv-details" open>
+                        <summary className="inv-sum tone-warn"><span className="inv-caret" aria-hidden="true"><IconChevron /></span><span className="inv-sum-label">Missing-auth candidates</span><span className="inv-count">{authC.length}</span></summary>
+                        <div className="inv-list">
+                          {authC.map((a, i) => (
+                            <div key={i} className="inv-list-item" style={{ display: 'block' }}>
+                              <span className="tag tag-fw">{a.method}</span> <code>{a.path}</code>
+                              <div className="muted" style={{ fontSize: 10 }}>{a.reason}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    {injections.length > 0 && (
+                      <details className="inv-details" open>
+                        <summary className="inv-sum tone-warn"><span className="inv-caret" aria-hidden="true"><IconChevron /></span><span className="inv-sum-label">Reflected-injection candidates</span><span className="inv-count">{injections.length}</span></summary>
+                        <div className="inv-list">
+                          {injections.map((inj, i) => (
+                            <div key={i} className="inv-list-item" style={{ display: 'block' }}>
+                              <span className="tag">{inj.family}</span> <code>{inj.method} {inj.path}</code>
+                              <span className="muted" style={{ fontSize: 10 }}> — param “{inj.param}”</span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    {idorC.length > 0 && (
+                      <details className="inv-details">
+                        <summary className="inv-sum"><span className="inv-caret" aria-hidden="true"><IconChevron /></span><span className="inv-sum-label">IDOR to check manually</span><span className="inv-count">{idorC.length}</span></summary>
+                        <div className="inv-list">
+                          {idorC.map((d, i) => (
+                            <div key={i} className="inv-list-item"><code>{d.method} {d.path}</code></div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    {t.testedAt && <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>Tested {new Date(t.testedAt).toLocaleString()}</div>}
                   </div>
                 )}
               </div>

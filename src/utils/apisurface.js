@@ -115,7 +115,14 @@ export function mergeApiEvent(inventory, event) {
   const idx = out.findIndex((e) => e.method === method && e.path === path);
   if (idx === -1) {
     if (out.length >= MAX_INVENTORY) return inv; // ceiling on distinct routes
-    out.push({ method, path, params: params.slice(), hasAuth: auth, count: 1 });
+    out.push({
+      method,
+      path,
+      params: params.slice(),
+      hasAuth: auth,
+      count: 1,
+      example: event.url, // first concrete url — a probe target for injection tests
+    });
   } else {
     const prev = out[idx];
     const mergedParams = prev.params.slice();
