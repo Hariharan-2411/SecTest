@@ -32,6 +32,11 @@ import {
   detectIdorCandidates,
   buildInjectionFindings,
 } from '../../utils/injection';
+import {
+  analyzeHandshake,
+  mergeWsEndpoint,
+  buildWsFindings,
+} from '../../utils/websocket';
 import { analyzeHeaders, mergeHeaderFindings } from '../../utils/headers';
 import { upsertFindings as upsertFindingsList } from '../../utils/findings';
 import {
@@ -487,6 +492,87 @@ async function getApiTests(pageUrl) {
   const r = await storageGet(['apiTests']);
   const summary = (r.apiTests || {})[ev.host] || null;
   return { success: true, host: ev.host, summary };
+}
+
+// --- WebSocket surface (passive) -------------------------------------------
+//
+// Handshake analysis (webRequest, observe-only) → per-host endpoint inventory
+// with a CSWSH candidate flag. Frames come from the MAIN-world shim via the
+// content-script relay. Nothing is blocked, altered, or replayed.
+
+const seenWsKeys = new Set();
+
+// ws:// / wss:// → http:// / https:// so scope host-matching is reliable.
+function wsToHttp(u) {
+  return String(u).replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:');
+}
+
+async function recordWsHandshake(details) {
+  try {
+    const { scope, passiveCapture } = await getSettings();
+    if (!passiveCapture) return;
+    const ev = evaluateScope(wsToHttp(details.url), scope);
+    if (!ev.allowed) return;
+    const key = `${ev.host}|${details.url}`;
+    if (seenWsKeys.has(key)) return;
+    seenWsKeys.add(key);
+    if (seenWsKeys.size > 2000) seenWsKeys.clear();
+    const hs = analyzeHandshake({ url: details.url, requestHeaders: details.requestHeaders || [] });
+    const r = await storageGet(['wsEndpoints']);
+    const store = r.wsEndpoints || {};
+    store[ev.host] = mergeWsEndpoint(store[ev.host] || [], { ...hs, host: ev.host });
+    await storageSet({ wsEndpoints: store });
+  } catch (_) {
+    // Observation must never throw into the webRequest pipeline.
+  }
+}
+
+async function recordWsFrame(pageUrl, frame) {
+  try {
+    if (!frame || typeof frame !== 'object') return;
+    const { scope, passiveCapture } = await getSettings();
+    if (!passiveCapture) return { success: false, reason: 'capture_disabled' };
+    const ev = evaluateScope(pageUrl, scope);
+    if (!ev.allowed) return { success: false, reason: 'out_of_scope' };
+    const r = await storageGet(['wsFrames']);
+    const store = r.wsFrames || {};
+    const log = store[ev.host] || [];
+    log.push({
+      event: String(frame.event || '').slice(0, 8),
+      url: String(frame.url || '').slice(0, 500),
+      data: String(frame.data == null ? '' : frame.data).slice(0, 2000),
+      ts: Date.now(),
+    });
+    store[ev.host] = log.slice(-200); // cap frames per host
+    await storageSet({ wsFrames: store });
+    return { success: true, host: ev.host };
+  } catch (e) {
+    return { success: false, reason: String(e && e.message) };
+  }
+}
+
+async function getWsSurface(pageUrl) {
+  const { scope } = await getSettings();
+  const ev = evaluateScope(pageUrl, scope);
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  const r = await storageGet(['wsEndpoints', 'wsFrames']);
+  return {
+    success: true,
+    host: ev.host,
+    endpoints: (r.wsEndpoints || {})[ev.host] || [],
+    frames: (r.wsFrames || {})[ev.host] || [],
+  };
+}
+
+async function saveWsFindings(pageUrl) {
+  const { scope } = await getSettings();
+  const ev = evaluateScope(pageUrl, scope);
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  const r = await storageGet(['wsEndpoints']);
+  const endpoints = (r.wsEndpoints || {})[ev.host] || [];
+  const findings = buildWsFindings({ host: ev.host, endpoints });
+  await persistFindingsGrouped(findings);
+  return { success: true, host: ev.host, saved: findings.length };
 }
 
 function appendAudit(entry) {
@@ -1079,6 +1165,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // async
   }
 
+  if (request.action === 'wsFrame') {
+    recordWsFrame(request.pageUrl, request.frame)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'getWsSurface') {
+    getWsSurface(request.pageUrl)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'saveWsFindings') {
+    saveWsFindings(request.pageUrl)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
   if (request.action === 'agentHealth') {
     agentHealth().then(sendResponse).catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
     return true; // async
@@ -1149,6 +1256,25 @@ try {
     chrome.webRequest.onSendHeaders.addListener(
       (details) => { recordApiRequest(details); },
       { urls: ['http://*/*', 'https://*/*'], types: ['xmlhttprequest'] },
+      ['requestHeaders']
+    );
+  } catch (_) {}
+}
+
+// Passive WebSocket handshake observation: read the Upgrade request's Origin +
+// Cookie on in-scope hosts to flag CSWSH candidates. Observe-only; extraHeaders
+// is required to read Cookie/Origin in MV3.
+try {
+  chrome.webRequest.onBeforeSendHeaders.addListener(
+    (details) => { recordWsHandshake(details); },
+    { urls: ['ws://*/*', 'wss://*/*', 'http://*/*', 'https://*/*'], types: ['websocket'] },
+    ['requestHeaders', 'extraHeaders']
+  );
+} catch (_) {
+  try {
+    chrome.webRequest.onBeforeSendHeaders.addListener(
+      (details) => { recordWsHandshake(details); },
+      { urls: ['ws://*/*', 'wss://*/*', 'http://*/*', 'https://*/*'], types: ['websocket'] },
       ['requestHeaders']
     );
   } catch (_) {}

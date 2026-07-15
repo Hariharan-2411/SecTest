@@ -99,6 +99,11 @@ describe('enrichFinding — CWE + CVSS metadata', () => {
     expect(enrichFinding({ type: 'api-injection' }).cwe).toBe('CWE-74');
   });
 
+  it('enriches ws-cswsh with CWE-346 and ws-injection with CWE-74', () => {
+    expect(enrichFinding({ type: 'ws-cswsh' }).cwe).toBe('CWE-346');
+    expect(enrichFinding({ type: 'ws-injection' }).cwe).toBe('CWE-74');
+  });
+
   it("leaves cwe/cvss null for an unknown type but doesn't throw", () => {
     const r = enrichFinding({ type: 'quantum_bug' });
     expect(r.cwe).toBeNull();

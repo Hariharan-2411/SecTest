@@ -143,6 +143,16 @@ export const CLASS_META = {
     cweName: 'Improper Neutralization of Special Elements (Injection)',
     vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N',
   },
+  'ws-cswsh': {
+    cwe: 'CWE-346',
+    cweName: 'Origin Validation Error (Cross-Site WebSocket Hijacking)',
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:L/A:N',
+  },
+  'ws-injection': {
+    cwe: 'CWE-74',
+    cweName: 'Improper Neutralization of Special Elements (Injection)',
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N',
+  },
 };
 
 /**

@@ -290,6 +290,27 @@ function reportPassiveObservation() {
 if (document.readyState === 'complete') reportPassiveObservation();
 else window.addEventListener('load', reportPassiveObservation, { once: true });
 
+// Relay WebSocket frames from the MAIN-world shim (src/pages/WsHook) to the
+// background, scope-gated. The shim can wrap window.WebSocket but can't reach
+// chrome.*; this isolated content script can. Observe-only.
+window.addEventListener('message', (e) => {
+  const d = e && e.data;
+  if (!d || d.__iris_ws !== true || e.source !== window) return;
+  if (!inScopeHere()) return;
+  try {
+    chrome.runtime.sendMessage(
+      {
+        action: 'wsFrame',
+        pageUrl: window.location.href,
+        frame: { event: d.event, url: d.url, data: d.data },
+      },
+      () => {
+        void chrome.runtime.lastError;
+      }
+    );
+  } catch (_) {}
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'ping') {
     sendResponse({ ok: true });

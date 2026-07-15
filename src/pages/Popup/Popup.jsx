@@ -27,6 +27,8 @@ import {
   SUBMISSION_STATES,
 } from '../../utils/programs';
 import { WEBHOOK_PLATFORMS } from '../../utils/notify';
+import { runReconLoop } from '../../utils/reconLoop';
+import { RISK_POLICY, DEFAULT_RECON_BUDGET } from '../../utils/reconAgent';
 import * as ai from '../../utils/aiProvider';
 import { DEFAULT_MODEL, decorate } from '../../utils/aiModels';
 import { useToast } from '../../components/ToastProvider';
@@ -279,6 +281,14 @@ const Popup = () => {
   const [gqlBusy, setGqlBusy] = useState(false); // graphql probe in flight
   const [apiTests, setApiTests] = useState({}); // { [host]: {injections,auth,idor,testedAt} }
   const [injBusy, setInjBusy] = useState(false); // injection tests in flight
+  const [wsEndpoints, setWsEndpoints] = useState({}); // { [host]: [{url,cswsh,hasCookie,...}] }
+  const [wsFrames, setWsFrames] = useState({}); // { [host]: [{event,url,data,ts}] }
+  // Recon triage agent (Phase 5). Runs the bounded plan→gate→execute loop in the
+  // popup so active-tool approvals happen where the human is.
+  const [triageRunning, setTriageRunning] = useState(false);
+  const [triageResult, setTriageResult] = useState(null);
+  const [triagePending, setTriagePending] = useState(null); // active-tool call awaiting approval
+  const approveResolverRef = useRef(null);
   const [headerFindings, setHeaderFindings] = useState({}); // { [host]: {url, checkedAt, findings} }
   const [findings, setFindings] = useState({}); // unified findings store { [host]: Finding[] }
   const [findingsCrossHost, setFindingsCrossHost] = useState(false); // dedup across a program's subdomains
@@ -351,7 +361,7 @@ const Popup = () => {
   useEffect(() => {
     // Load settings from storage
     chrome.storage.local.get(
-      ['allowlist', 'scope', 'passiveCapture', 'inventory', 'apiInventory', 'graphqlSurface', 'apiTests', 'headerFindings', 'findings', 'dryRunMode', 'auditLog', 'aiModel', 'checklistStore',
+      ['allowlist', 'scope', 'passiveCapture', 'inventory', 'apiInventory', 'graphqlSurface', 'apiTests', 'wsEndpoints', 'wsFrames', 'headerFindings', 'findings', 'dryRunMode', 'auditLog', 'aiModel', 'checklistStore',
        'jsWatch', 'programs', 'submissions', 'notifyConfig', 'jsMonitor', 'agentConfig'],
       (result) => {
         setJsWatch(result.jsWatch || {});
@@ -359,6 +369,8 @@ const Popup = () => {
         setApiInventory(result.apiInventory || {});
         setGraphqlSurface(result.graphqlSurface || {});
         setApiTests(result.apiTests || {});
+        setWsEndpoints(result.wsEndpoints || {});
+        setWsFrames(result.wsFrames || {});
         setFindings(result.findings || {});
         setPrograms(result.programs || []);
         setSubmissions(result.submissions || []);
@@ -476,11 +488,13 @@ const Popup = () => {
   };
 
   const refreshInventory = () => {
-    chrome.storage.local.get(['inventory', 'apiInventory', 'graphqlSurface', 'apiTests', 'headerFindings', 'findings'], (r) => {
+    chrome.storage.local.get(['inventory', 'apiInventory', 'graphqlSurface', 'apiTests', 'wsEndpoints', 'wsFrames', 'headerFindings', 'findings'], (r) => {
       setInventory(r.inventory || {});
       setApiInventory(r.apiInventory || {});
       setGraphqlSurface(r.graphqlSurface || {});
       setApiTests(r.apiTests || {});
+      setWsEndpoints(r.wsEndpoints || {});
+      setWsFrames(r.wsFrames || {});
       setHeaderFindings(r.headerFindings || {});
       setFindings(r.findings || {});
     });
@@ -544,6 +558,82 @@ const Popup = () => {
       else toast.info('No candidates surfaced.');
       refreshInventory();
     });
+  };
+
+  // Persist the observed WebSocket surface (endpoints + CSWSH candidates) as findings.
+  const saveWsSurface = () => {
+    if (!isHostAllowed(currentUrl)) { toast.error('Target is out of scope.'); return; }
+    chrome.runtime.sendMessage({ action: 'saveWsFindings', pageUrl: currentUrl }, (resp) => {
+      void chrome.runtime.lastError;
+      if (resp && resp.success) { toast.success(`Saved ${resp.saved} finding(s).`); refreshInventory(); }
+      else toast.error('Save failed: ' + ((resp && resp.reason) || 'unknown'));
+    });
+  };
+
+  // --- Recon triage agent (Phase 5) -----------------------------------------
+  // Concrete in-scope targets (the agent enumerates these; '*' is not a target).
+  const triageTargets = (scope.inScope || []).filter((s) => s && s !== '*');
+
+  // Resolve a pending active-tool approval prompt with the user's decision.
+  const resolveTriageApproval = (ok) => {
+    const r = approveResolverRef.current;
+    approveResolverRef.current = null;
+    setTriagePending(null);
+    if (r) r(ok);
+  };
+
+  // Run the bounded recon loop: LLM plans → pure gate → safe tools auto-run,
+  // active tools prompt for approval → ranked triage draft. Never auto-submits.
+  const runTriage = async () => {
+    if (!triageTargets.length) { toast.error('Add concrete in-scope targets in Config first.'); return; }
+    if (!agentHealthInfo || !agentHealthInfo.ok) { toast.error('Companion agent not reachable — start it and check health in Config.'); return; }
+    setTriageResult(null);
+    setTriageRunning(true);
+
+    // agentClient.scan delegates to the background's scope-gated agentScan so the
+    // same server-side scope sync + result folding applies as manual scans.
+    const agentClient = {
+      scan: ({ tool, target, profile }) =>
+        new Promise((resolve) => {
+          chrome.runtime.sendMessage({ action: 'agentScan', tool, target, profile }, (resp) => {
+            void chrome.runtime.lastError;
+            if (!resp) return resolve({ status: 0, body: { error: 'no_response' } });
+            if (resp.success === false && resp.status == null) {
+              return resolve({ status: 403, body: { error: resp.reason || 'blocked' } });
+            }
+            resolve({ status: resp.status || (resp.success ? 200 : 0), body: resp.data || {} });
+          });
+        }),
+    };
+
+    // active-tool gate: surface a prompt and await the user's click.
+    const approve = (call) =>
+      new Promise((resolve) => {
+        setTriagePending(call);
+        approveResolverRef.current = resolve;
+      });
+
+    try {
+      const result = await runReconLoop({ scope, agentClient, approve, policy: RISK_POLICY, budget: DEFAULT_RECON_BUDGET });
+      setTriageResult(result);
+      const rw = (result.reportworthy || []).length;
+      if (rw) toast.success(`Triage done — ${rw} report-worthy of ${(result.triage || []).length} finding(s).`);
+      else toast.info(`Triage done — ${(result.triage || []).length} finding(s), none report-worthy yet.`);
+      refreshInventory(); // agent results also folded into Site Inventory
+    } catch (e) {
+      toast.error('Triage failed: ' + String(e && e.message));
+    } finally {
+      setTriageRunning(false);
+      setTriagePending(null);
+      approveResolverRef.current = null;
+    }
+  };
+
+  const saveTriageFindings = () => {
+    const list = (triageResult && triageResult.triage) || [];
+    if (!list.length) { toast.info('Nothing to save.'); return; }
+    saveFindings(list);
+    toast.success(`Saved ${list.length} finding(s).`);
   };
 
   const refreshFindings = () => {
@@ -2182,6 +2272,95 @@ const Popup = () => {
       {activeTab === 'Recon' && (
         <div className="recon-panel">
           {(() => {
+            const r = triageResult;
+            const surface = (r && r.surface) || {};
+            const ranked = (r && r.triage) || [];
+            const executed = (r && r.executed) || [];
+            const agentOk = agentHealthInfo && agentHealthInfo.ok;
+            return (
+              <div className="inventory-section">
+                <div className="checklist-head">
+                  <h3>Auto-Triage <span className="muted">· Recon Agent</span></h3>
+                  <span className="muted" style={{ fontSize: 10 }}>budget {DEFAULT_RECON_BUDGET} tool runs</span>
+                </div>
+                <p className="checklist-sub">
+                  The agent asks the LLM to plan in-scope enumeration, runs <strong>safe</strong> tools automatically and
+                  <strong> pauses for your approval</strong> on active ones (nmap/nuclei/…), then returns a ranked triage
+                  draft. Nothing is auto-submitted. Needs the Companion Agent running and concrete in-scope targets.
+                </p>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                  <button className="btn-small" onClick={runTriage} disabled={triageRunning || !triageTargets.length || !agentOk}>
+                    {triageRunning ? 'Running…' : 'Run Auto-Triage'}
+                  </button>
+                  <span className={`ai-dot ai-dot-${agentOk ? 'ok' : agentHealthInfo ? 'down' : 'checking'}`} title="Companion agent status" />
+                  <span className="muted" style={{ fontSize: 10 }}>
+                    {agentOk ? `agent ready · ${triageTargets.length} target(s)` : 'agent not reachable'}
+                  </span>
+                </div>
+
+                {!triageTargets.length && (
+                  <div className="hint">No concrete in-scope targets. Add them in Config → Program Scope (a bare <code>*</code> isn’t a target).</div>
+                )}
+
+                {triagePending && (
+                  <div className="agent-finding sev-medium" style={{ marginBottom: 8 }}>
+                    <strong>Approve active tool?</strong>
+                    <div className="muted" style={{ fontSize: 11, margin: '2px 0' }}>
+                      <code>{triagePending.tool}</code> <span className="tag">{triagePending.risk}</span> → <code>{triagePending.target}</code> · {triagePending.profile}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button className="btn-small" onClick={() => resolveTriageApproval(true)}>Approve</button>
+                      <button className="btn-small" onClick={() => resolveTriageApproval(false)}>Skip</button>
+                    </div>
+                  </div>
+                )}
+
+                {triageRunning && !triagePending && (
+                  <div className="hint">Agent working… safe tools run automatically; you’ll be prompted for active ones.</div>
+                )}
+
+                {r && (
+                  <div>
+                    <div className="muted" style={{ fontSize: 11, margin: '4px 0' }}>
+                      {(r.summary && r.summary.total) || 0} findings · {(r.reportworthy || []).length} report-worthy ·
+                      {' '}{(surface.subdomains || []).length} subdomains · {(surface.hosts || []).length} hosts ·
+                      {' '}{(surface.urls || []).length} urls · {r.budgetUsed} run(s)
+                      {ranked.length > 0 && <> · <button className="link-btn" onClick={saveTriageFindings}>Save to Findings</button></>}
+                    </div>
+                    {ranked.length > 0 ? (
+                      <div className="header-findings">
+                        {ranked.slice(0, 50).map((f, i) => (
+                          <div key={i} className={`agent-finding sev-${f.severity}`}>
+                            {typeof f.confidence === 'number' && <span className="muted" style={{ fontSize: 10, float: 'right' }}>{f.confidence}%</span>}
+                            <span className="sev-badge">{f.severity}</span> <strong>#{f.rank} {f.title}</strong>
+                            <div className="muted" style={{ fontSize: 10 }}>{f.host}{f.evidence ? ` · ${f.evidence}` : ''}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="hint">No findings surfaced — try approving the active tools when prompted, or widen scope.</div>
+                    )}
+                    {executed.length > 0 && (
+                      <details className="inv-details">
+                        <summary className="inv-sum"><span className="inv-caret" aria-hidden="true"><IconChevron /></span><span className="inv-sum-label">Steps</span><span className="inv-count">{executed.filter((e) => e.ran).length}/{executed.length}</span></summary>
+                        <div className="inv-list">
+                          {executed.map((e, i) => (
+                            <div key={i} className="inv-list-item" style={{ display: 'block' }}>
+                              <span className={`tag ${e.ran ? 'tag-fw' : ''}`}>{e.decision}</span>
+                              {e.call && <code style={{ fontSize: 10 }}> {e.call.tool} {e.call.target}</code>}
+                              {!e.ran && e.reason && <span className="muted" style={{ fontSize: 10 }}> — {e.reason}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {(() => {
             const inv = (currentHost && inventory[currentHost]) || emptyInventory();
             const sum = summarizeInventory(inv);
             const sumHead = (label, n, tone) => (
@@ -2506,6 +2685,69 @@ const Popup = () => {
                       </details>
                     )}
                     {g.checkedAt && <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>Probed {new Date(g.checkedAt).toLocaleString()}</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {(() => {
+            const eps = (currentHost && wsEndpoints[currentHost]) || [];
+            const frames = (currentHost && wsFrames[currentHost]) || [];
+            const cswsh = eps.filter((e) => e.cswsh).length;
+            return (
+              <div className="inventory-section">
+                <div className="checklist-head">
+                  <h3>WebSocket {currentHost && <span className="muted">· {currentHost}</span>}</h3>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="link-btn" onClick={refreshInventory}>Refresh</button>
+                    <button className="link-btn" onClick={saveWsSurface} disabled={!eps.length}>Save to Findings</button>
+                  </div>
+                </div>
+                <p className="checklist-sub">
+                  WebSocket handshakes (Origin/cookie analysis for CSWSH) and live frames, captured passively as you browse
+                  in-scope pages. Observe-only — frames are never altered or replayed.
+                </p>
+                {eps.length === 0 && frames.length === 0 ? (
+                  <div className="recon-empty">
+                    <span className="recon-empty-icon"><IconChevron /></span>
+                    <p className="recon-empty-title">No WebSocket activity captured yet</p>
+                    <p className="recon-empty-sub">
+                      {passiveCapture
+                        ? 'Browse an in-scope page that opens a WebSocket (chat, live feed, notifications) and it appears here.'
+                        : 'Passive capture is off. Enable it in Config, then browse an in-scope page that uses WebSockets.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    {eps.length > 0 && (
+                      <details className="inv-details" open>
+                        <summary className={`inv-sum${cswsh ? ' tone-warn' : ''}`}><span className="inv-caret" aria-hidden="true"><IconChevron /></span><span className="inv-sum-label">Endpoints{cswsh ? ` · ${cswsh} CSWSH?` : ''}</span><span className="inv-count">{eps.length}</span></summary>
+                        <div className="inv-list">
+                          {eps.slice(0, 100).map((e, i) => (
+                            <div key={i} className="inv-list-item" style={{ display: 'block' }}>
+                              <code>{e.url}</code>
+                              {e.hasCookie && <span className="tag" title="Handshake carried cookies (ambient auth)">cookie</span>}
+                              {e.cswsh && <span className="tag tag-fw" title="Cookie-authed with no per-connection token — verify the server checks Origin">CSWSH?</span>}
+                              {e.origin && <span className="muted" style={{ fontSize: 10 }}> · origin {e.origin}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    {frames.length > 0 && (
+                      <details className="inv-details">
+                        <summary className="inv-sum"><span className="inv-caret" aria-hidden="true"><IconChevron /></span><span className="inv-sum-label">Frames (last {Math.min(frames.length, 100)})</span><span className="inv-count">{frames.length}</span></summary>
+                        <div className="inv-list">
+                          {frames.slice(-100).reverse().map((fr, i) => (
+                            <div key={i} className="inv-list-item" style={{ display: 'block' }}>
+                              <span className={`tag ${fr.event === 'send' ? 'tag-fw' : ''}`}>{fr.event === 'send' ? '↑ send' : fr.event === 'recv' ? '↓ recv' : fr.event}</span>
+                              <code style={{ fontSize: 10 }}>{String(fr.data || '').slice(0, 200)}</code>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                   </div>
                 )}
               </div>

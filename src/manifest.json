@@ -30,6 +30,12 @@
       "js": ["contentScript.bundle.js"],
       "css": ["content.styles.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*", "<all_urls>"],
+      "js": ["wsHook.bundle.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "web_accessible_resources": [

@@ -34,3 +34,7 @@ secrets.*.js
 
 # agent runtime data
 agent/data/
+
+# internal planning / design docs — keep local, never push
+BUG_BOUNTY_AUTOMATION_PLAN.md
+docs/superpowers/
