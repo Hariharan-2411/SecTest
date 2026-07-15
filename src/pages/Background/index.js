@@ -15,6 +15,15 @@ import {
   mergeSpecEndpoints,
   buildApiFindings,
 } from '../../utils/apisurface';
+import {
+  introspectionQuery,
+  parseSchema,
+  surfaceFromSchema,
+  detectSuggestions,
+  graphqlCandidates,
+  detectBatching,
+  buildGraphqlFindings,
+} from '../../utils/graphql';
 import { analyzeHeaders, mergeHeaderFindings } from '../../utils/headers';
 import { upsertFindings as upsertFindingsList } from '../../utils/findings';
 import {
@@ -287,6 +296,101 @@ async function probeApiSpec(pageUrl) {
 
   await appendAudit({ action: 'API_SPEC_PROBE', url: pageUrl, host, result: 'EXECUTED', dryRun: false, specUrl: null });
   return { success: true, dryRun: false, host, specUrl: null, endpoints: [] };
+}
+
+// --- GraphQL surface probe (active, gated) ---------------------------------
+//
+// POSTs a benign, read-only introspection query (and a typo probe + a batched
+// probe) to the well-known GraphQL endpoints. NEVER sends a mutation. Gated by
+// scope + Dry Run + rate-limit + audit, exactly like the API-spec probe.
+
+async function postJson(url, body) {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+      redirect: 'follow',
+      credentials: 'omit',
+    });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (_) {}
+    return { ok: res.ok, status: res.status, json };
+  } catch (e) {
+    return { ok: false, status: 0, error: String(e && e.message) };
+  }
+}
+
+async function probeGraphql(pageUrl) {
+  const { scope, dryRunMode } = await getSettings();
+  const ev = evaluateScope(pageUrl, scope);
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  const host = ev.host;
+  const candidates = graphqlCandidates(pageUrl);
+
+  if (dryRunMode) {
+    await appendAudit({ action: 'GRAPHQL_PROBE', url: pageUrl, host, result: 'DRY_RUN', dryRun: true, wouldPost: candidates });
+    return { success: true, dryRun: true, wouldPost: candidates, host };
+  }
+
+  for (const endpoint of candidates) {
+    if (!(await rateLimiter.canPerformAction())) return { success: false, reason: 'rate_limited' };
+    const intro = await postJson(endpoint, { query: introspectionQuery() });
+    if (intro.status === 0) continue; // endpoint not reachable — try next
+
+    const schema = parseSchema(intro.json);
+    const introspection = !!schema;
+    const surface = introspection ? surfaceFromSchema(schema) : { queries: [], mutations: [], types: [] };
+
+    // If introspection is off, a typo probe may still leak names; and a batched
+    // probe reveals whether aliasing/batching is honored. Both are benign reads.
+    let suggestions = [];
+    if (!introspection) {
+      if (await rateLimiter.canPerformAction()) {
+        const typo = await postJson(endpoint, { query: '{ __iris_invalid_field_zzz }' });
+        suggestions = detectSuggestions(typo.json);
+      }
+    }
+    let batching = false;
+    if (await rateLimiter.canPerformAction()) {
+      const q = { query: '{__typename}' };
+      const batch = await postJson(endpoint, [q, q]);
+      batching = detectBatching(batch.json);
+    }
+
+    // A GraphQL endpoint responds to {__typename} even when introspection is off;
+    // treat any structured GraphQL response (data or errors) as "this is it".
+    const looksGraphql =
+      introspection ||
+      suggestions.length > 0 ||
+      (intro.json && (intro.json.data !== undefined || Array.isArray(intro.json.errors)));
+    if (!looksGraphql) continue;
+
+    const findings = buildGraphqlFindings({ host, endpoint, introspection, surface, suggestions, batching });
+    if (findings.length) await persistFindingsGrouped(findings);
+
+    const summary = { endpoint, introspection, surface, suggestions, batching, checkedAt: new Date().toISOString() };
+    const gr = await storageGet(['graphqlSurface']);
+    const store = gr.graphqlSurface || {};
+    store[host] = summary;
+    await storageSet({ graphqlSurface: store });
+
+    await appendAudit({ action: 'GRAPHQL_PROBE', url: pageUrl, host, result: 'EXECUTED', dryRun: false, endpoint, introspection, batching, suggestions: suggestions.length });
+    return { success: true, dryRun: false, host, ...summary };
+  }
+
+  await appendAudit({ action: 'GRAPHQL_PROBE', url: pageUrl, host, result: 'EXECUTED', dryRun: false, endpoint: null });
+  return { success: true, dryRun: false, host, endpoint: null };
+}
+
+async function getGraphqlSurface(pageUrl) {
+  const { scope } = await getSettings();
+  const ev = evaluateScope(pageUrl, scope);
+  if (!ev.allowed) return { success: false, reason: ev.reason, host: ev.host };
+  const r = await storageGet(['graphqlSurface']);
+  const summary = (r.graphqlSurface || {})[ev.host] || null;
+  return { success: true, host: ev.host, summary };
 }
 
 function appendAudit(entry) {
@@ -846,6 +950,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'saveApiFindings') {
     saveApiFindings(request.pageUrl, request.specUrl, request.specEndpoints)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'probeGraphql') {
+    probeGraphql(request.pageUrl)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'getGraphqlSurface') {
+    getGraphqlSurface(request.pageUrl)
       .then(sendResponse)
       .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
     return true; // async

@@ -123,6 +123,11 @@ export const CLASS_META = {
     cweName: 'Exposure of Sensitive Information to an Unauthorized Actor',
     vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N',
   },
+  'graphql-introspection': {
+    cwe: 'CWE-200',
+    cweName: 'Exposure of Sensitive Information to an Unauthorized Actor',
+    vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N',
+  },
 };
 
 /**

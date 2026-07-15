@@ -87,6 +87,12 @@ describe('enrichFinding — CWE + CVSS metadata', () => {
     expect(r.cvss.vector).toMatch(/^CVSS:3\.1\//);
   });
 
+  it('enriches graphql-introspection with CWE-200 (information exposure)', () => {
+    const r = enrichFinding({ type: 'graphql-introspection' });
+    expect(r.cwe).toBe('CWE-200');
+    expect(r.cvss.vector).toMatch(/^CVSS:3\.1\//);
+  });
+
   it("leaves cwe/cvss null for an unknown type but doesn't throw", () => {
     const r = enrichFinding({ type: 'quantum_bug' });
     expect(r.cwe).toBeNull();

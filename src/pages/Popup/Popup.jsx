@@ -275,6 +275,8 @@ const Popup = () => {
   const [inventory, setInventory] = useState({}); // { [host]: inv }
   const [apiInventory, setApiInventory] = useState({}); // { [host]: [{method,path,params,hasAuth,count}] }
   const [apiBusy, setApiBusy] = useState(false); // spec probe in flight
+  const [graphqlSurface, setGraphqlSurface] = useState({}); // { [host]: {endpoint,introspection,surface,suggestions,batching} }
+  const [gqlBusy, setGqlBusy] = useState(false); // graphql probe in flight
   const [headerFindings, setHeaderFindings] = useState({}); // { [host]: {url, checkedAt, findings} }
   const [findings, setFindings] = useState({}); // unified findings store { [host]: Finding[] }
   const [findingsCrossHost, setFindingsCrossHost] = useState(false); // dedup across a program's subdomains
@@ -347,12 +349,13 @@ const Popup = () => {
   useEffect(() => {
     // Load settings from storage
     chrome.storage.local.get(
-      ['allowlist', 'scope', 'passiveCapture', 'inventory', 'apiInventory', 'headerFindings', 'findings', 'dryRunMode', 'auditLog', 'aiModel', 'checklistStore',
+      ['allowlist', 'scope', 'passiveCapture', 'inventory', 'apiInventory', 'graphqlSurface', 'headerFindings', 'findings', 'dryRunMode', 'auditLog', 'aiModel', 'checklistStore',
        'jsWatch', 'programs', 'submissions', 'notifyConfig', 'jsMonitor', 'agentConfig'],
       (result) => {
         setJsWatch(result.jsWatch || {});
         setHeaderFindings(result.headerFindings || {});
         setApiInventory(result.apiInventory || {});
+        setGraphqlSurface(result.graphqlSurface || {});
         setFindings(result.findings || {});
         setPrograms(result.programs || []);
         setSubmissions(result.submissions || []);
@@ -470,9 +473,10 @@ const Popup = () => {
   };
 
   const refreshInventory = () => {
-    chrome.storage.local.get(['inventory', 'apiInventory', 'headerFindings', 'findings'], (r) => {
+    chrome.storage.local.get(['inventory', 'apiInventory', 'graphqlSurface', 'headerFindings', 'findings'], (r) => {
       setInventory(r.inventory || {});
       setApiInventory(r.apiInventory || {});
+      setGraphqlSurface(r.graphqlSurface || {});
       setHeaderFindings(r.headerFindings || {});
       setFindings(r.findings || {});
     });
@@ -501,6 +505,23 @@ const Popup = () => {
       void chrome.runtime.lastError;
       if (resp && resp.success) { toast.success(`Saved ${resp.saved} finding(s).`); refreshInventory(); }
       else toast.error('Save failed: ' + ((resp && resp.reason) || 'unknown'));
+    });
+  };
+
+  // Active, gated GraphQL probe: benign read-only introspection (+ typo & batch
+  // probes) against the well-known GraphQL endpoints. Never sends a mutation.
+  const runProbeGraphql = () => {
+    if (!isHostAllowed(currentUrl)) { toast.error('Target is out of scope.'); return; }
+    setGqlBusy(true);
+    chrome.runtime.sendMessage({ action: 'probeGraphql', pageUrl: currentUrl }, (resp) => {
+      void chrome.runtime.lastError;
+      setGqlBusy(false);
+      if (!resp || !resp.success) { toast.error('GraphQL probe failed: ' + ((resp && resp.reason) || 'unknown')); return; }
+      if (resp.dryRun) { toast.info(`Dry run — would POST introspection to ${resp.wouldPost.length} endpoint(s). Turn off Dry Run to probe.`); return; }
+      if (!resp.endpoint) { toast.info('No GraphQL endpoint at the well-known paths.'); return; }
+      if (resp.introspection) toast.success('GraphQL introspection is ENABLED — saved as a finding.');
+      else toast.info(`GraphQL endpoint found${resp.suggestions && resp.suggestions.length ? ' (leaks field suggestions)' : ' (introspection off)'}.`);
+      refreshInventory();
     });
   };
 
@@ -2331,6 +2352,67 @@ const Popup = () => {
                         )}
                       </div>
                     ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {(() => {
+            const g = (currentHost && graphqlSurface[currentHost]) || null;
+            const surf = (g && g.surface) || { queries: [], mutations: [], types: [] };
+            return (
+              <div className="inventory-section">
+                <div className="checklist-head">
+                  <h3>GraphQL {currentHost && <span className="muted">· {currentHost}</span>}</h3>
+                  <button className="link-btn" onClick={refreshInventory}>Refresh</button>
+                </div>
+                <p className="checklist-sub">
+                  Benign, read-only introspection probe against the well-known GraphQL paths (gated by scope + Dry Run).
+                  Never sends a mutation.
+                </p>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <button className="btn-small" onClick={runProbeGraphql} disabled={gqlBusy || !isHostAllowed(currentUrl)}>
+                    {gqlBusy ? 'Probing…' : 'Probe GraphQL'}
+                  </button>
+                </div>
+                {!g ? (
+                  <div className="hint">No GraphQL probe yet for this host. Click Probe GraphQL (Dry Run shows what it would POST).</div>
+                ) : !g.endpoint ? (
+                  <div className="hint">No GraphQL endpoint found at the well-known paths.</div>
+                ) : (
+                  <div>
+                    <div className="inv-list-item" style={{ display: 'block' }}>
+                      <code>{g.endpoint}</code>{' '}
+                      <span className={`sev-badge ${g.introspection ? 'sev-low' : ''}`} style={{ marginLeft: 4 }}>
+                        introspection {g.introspection ? 'ON' : 'off'}
+                      </span>
+                      {g.batching && <span className="tag" title="Query batching honored — DoS/rate-limit surface">batching</span>}
+                    </div>
+                    {g.introspection && (
+                      <div className="muted" style={{ fontSize: 11, margin: '4px 0' }}>
+                        {surf.queries.length} queries · {surf.mutations.length} mutations · {surf.types.length} types
+                      </div>
+                    )}
+                    {surf.queries.length > 0 && (
+                      <details className="inv-details">
+                        <summary className="inv-sum"><span className="inv-caret" aria-hidden="true"><IconChevron /></span><span className="inv-sum-label">Queries</span><span className="inv-count">{surf.queries.length}</span></summary>
+                        <div className="inv-list">{surf.queries.slice(0, 200).map((q, i) => <span key={i} className="tag">{q}</span>)}</div>
+                      </details>
+                    )}
+                    {surf.mutations.length > 0 && (
+                      <details className="inv-details">
+                        <summary className="inv-sum tone-warn"><span className="inv-caret" aria-hidden="true"><IconChevron /></span><span className="inv-sum-label">Mutations</span><span className="inv-count">{surf.mutations.length}</span></summary>
+                        <div className="inv-list">{surf.mutations.slice(0, 200).map((m, i) => <span key={i} className="tag tag-fw">{m}</span>)}</div>
+                      </details>
+                    )}
+                    {g.suggestions && g.suggestions.length > 0 && (
+                      <details className="inv-details" open>
+                        <summary className="inv-sum tone-warn"><span className="inv-caret" aria-hidden="true"><IconChevron /></span><span className="inv-sum-label">Leaked field suggestions</span><span className="inv-count">{g.suggestions.length}</span></summary>
+                        <div className="inv-list">{g.suggestions.slice(0, 100).map((s, i) => <span key={i} className="tag">{s}</span>)}</div>
+                      </details>
+                    )}
+                    {g.checkedAt && <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>Probed {new Date(g.checkedAt).toLocaleString()}</div>}
                   </div>
                 )}
               </div>
