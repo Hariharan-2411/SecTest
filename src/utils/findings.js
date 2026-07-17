@@ -14,6 +14,19 @@
 
 export const FINDING_SEVERITIES = ['critical', 'high', 'medium', 'low', 'informational'];
 
+/**
+ * Strongest constituent severity, bumped one level (capped 'critical'), because a
+ * validated multi-step chain demonstrates more impact than any single part.
+ */
+export function deriveSeverity(constituents) {
+  const idxs = (Array.isArray(constituents) ? constituents : [])
+    .map((f) => FINDING_SEVERITIES.indexOf(f && f.severity))
+    .filter((i) => i >= 0);
+  if (!idxs.length) return 'informational';
+  const base = Math.min(...idxs); // lower index = higher severity
+  return FINDING_SEVERITIES[Math.max(0, base - 1)];
+}
+
 function severityRank(sev) {
   const i = FINDING_SEVERITIES.indexOf(sev);
   return i === -1 ? FINDING_SEVERITIES.length : i;

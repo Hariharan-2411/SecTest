@@ -19,9 +19,11 @@
 // never throws — any failure yields zero chains.
 
 import { evaluateScope } from './scope';
-import { FINDING_SEVERITIES, sortFindings } from './findings';
+import { sortFindings, deriveSeverity } from './findings';
 import { BANDS, scoreFinding, validateFindings } from './validate';
 import * as ai from './aiProvider';
+
+export { deriveSeverity };
 
 export const MAX_CHAINS = 8;
 export const MAX_STEPS = 6;
@@ -57,19 +59,6 @@ function hostInScope(host, scope) {
   if (!h) return true; // no host to check
   const url = /^https?:\/\//i.test(h) ? h : `https://${h}`;
   return evaluateScope(url, scope).allowed;
-}
-
-/**
- * Strongest constituent severity, bumped one level (capped 'critical'), because a
- * validated multi-step chain demonstrates more impact than any single part.
- */
-export function deriveSeverity(constituents) {
-  const idxs = (Array.isArray(constituents) ? constituents : [])
-    .map((f) => FINDING_SEVERITIES.indexOf(f && f.severity))
-    .filter((i) => i >= 0);
-  if (!idxs.length) return 'informational';
-  const base = Math.min(...idxs); // lower index = higher severity
-  return FINDING_SEVERITIES[Math.max(0, base - 1)];
 }
 
 /** Keep a CVSS 3.1 vector string as a display label, or null. Format-check only. */
