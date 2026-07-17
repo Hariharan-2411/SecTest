@@ -17,6 +17,7 @@ import { proposeChains } from '../../utils/chains';
 import { enrichFinding, enrichFindings } from '../../utils/enrich';
 import { normalizePlan, mapStepToAction, isSafeStep, canEscalate, remainingBudget, DEFAULT_ESCALATION_BUDGET } from '../../utils/escalation';
 import { assembleContext } from '../../utils/escalationContext';
+import { deriveChainGoals } from '../../utils/chainGoals';
 import { buildReport, REPORT_PLATFORMS, SEVERITIES } from '../../utils/reportBuilder';
 import {
   createProgram,
@@ -750,16 +751,21 @@ const Popup = () => {
     }
     const host = finding.host || currentHost;
     setEscalationBusy(true);
-    setEscalation({ finding, steps: [], rejected: [], depth, loading: true });
+    setEscalation({ finding, steps: [], rejected: [], depth, chainGoals: [], loading: true });
     try {
+      const hostFindings = findings[host] || [];
+      // Chain-directed: if this finding is a link in a near-complete playbook, the
+      // missing link becomes the planner's goal (grounding only — steps still validate).
+      const chainGoals = deriveChainGoals(finding, { findings: hostFindings, scope });
       const context = assembleContext(finding, {
         inventory: inventory[host] || (currentHost === host ? inventory[currentHost] : undefined),
-        findings: findings[host] || [],
+        findings: hostFindings,
         recon,
+        chainGoals,
       });
       const { steps: rawSteps } = await ai.escalateFinding(finding, context, aiModel);
       const { steps, rejected } = normalizePlan(rawSteps, { scope, host });
-      setEscalation({ finding, steps, rejected, depth, loading: false });
+      setEscalation({ finding, steps, rejected, depth, chainGoals, loading: false });
       if (!steps.length) toast.info('No actionable escalation steps proposed.');
     } catch (e) {
       setEscalation(null);
@@ -4101,6 +4107,16 @@ const Popup = () => {
             <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
               depth {escalation.depth || 0} · action budget {remainingBudget(escBudgetUsed)}/{DEFAULT_ESCALATION_BUDGET} left this session
             </div>
+            {(escalation.chainGoals || []).length > 0 && (
+              <div className="escalation-goals" style={{ fontSize: 11, marginBottom: 8, padding: 6, border: '1px solid var(--border, #333)', borderRadius: 4 }}>
+                <strong>⛓ Chain goals</strong> — this finding is a link in {escalation.chainGoals.length} near-complete chain{escalation.chainGoals.length > 1 ? 's' : ''}:
+                {escalation.chainGoals.map((g) => (
+                  <div key={g.playbookId} className="muted" style={{ marginTop: 3 }}>
+                    <span title={g.name}>{g.name}</span> — missing: {g.missing.map((m) => `${m.label} (${m.hint.verbs.join('/')})`).join(', ')}
+                  </div>
+                ))}
+              </div>
+            )}
             {escalation.loading ? (
               <div className="hint">Planning…</div>
             ) : (escalation.steps || []).length === 0 ? (

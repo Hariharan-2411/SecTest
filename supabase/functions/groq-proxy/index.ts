@@ -206,7 +206,9 @@ const ESCALATE_SYSTEM =
   '(7) NEVER propose data exfiltration, persistence, lateral movement, account ' +
   'takeover of real users, or denial of service. ' +
   '(8) At most 8 steps, highest-value first, each with a one-line rationale and ' +
-  'the expectedSignal that would confirm it.';
+  'the expectedSignal that would confirm it. ' +
+  '(9) If the context includes "chainGoals", PRIORITIZE steps whose expectedSignal ' +
+  'would produce a listed missing-link finding type, to complete the chain.';
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
