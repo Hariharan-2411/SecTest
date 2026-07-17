@@ -261,6 +261,8 @@ export async function proposeChains(findings, { chat, model, scope } = {}) {
     scope,
   });
   const deduped = dedupeChains(chains);
+  // `source` reflects whether the model reply parsed, not chain provenance — a
+  // complete playbook still emits its (deterministic) chain even when source is 'llm'.
   const source = llmOk ? 'llm' : deduped.length ? 'playbook' : 'error';
   return { chains: deduped, rejected, source };
 }

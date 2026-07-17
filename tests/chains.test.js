@@ -312,4 +312,16 @@ describe('chain playbooks wiring', () => {
     const content = buildChainsPrompt([fXss]).messages[0].content;
     expect(content).not.toMatch(/partially matched/i);
   });
+
+  it('a deterministic playbook chain wins de-duplication over an identical LLM proposal', async () => {
+    const reply = JSON.stringify({
+      chains: [{ title: 'model version', steps: [{ findingId: 'a' }, { findingId: 'b' }], rationale: 'model rationale' }],
+    });
+    const r = await proposeChains([fXss, fJwt], { chat: async () => reply, scope: pbScope });
+    expect(r.source).toBe('llm'); // the reply parsed
+    expect(r.chains).toHaveLength(1); // the identical proposal collapsed into one
+    expect([...r.chains[0].findingIds].sort()).toEqual(['a', 'b']);
+    // deterministic-first ordering means the code-authored chain survives, not the model's
+    expect(r.chains[0].title).toBe('DOM-XSS → exposed token → account takeover');
+  });
 });

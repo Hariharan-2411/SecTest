@@ -24,6 +24,18 @@ describe('PLAYBOOKS', () => {
       }
     }
   });
+
+  it('each playbook has pairwise-disjoint link type-sets (the greedy matcher assumes this)', () => {
+    for (const p of PLAYBOOKS) {
+      const seen = new Map(); // type -> linkId that first claimed it
+      for (const l of p.links) {
+        for (const t of l.match.types) {
+          expect(seen.has(t)).toBe(false); // a type must not appear in two links of one playbook
+          seen.set(t, l.id);
+        }
+      }
+    }
+  });
 });
 
 describe('matchPlaybooks', () => {
