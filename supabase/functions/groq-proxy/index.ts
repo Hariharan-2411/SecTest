@@ -84,6 +84,10 @@ function buildGenerateMessages(context: Record<string, unknown> = {}) {
   const elementName = context.elementName ?? '*';
   const testType = context.testType ?? 'Payload Generation';
   const vulnerability = context.vulnerability ?? 'General testing';
+  const framework = typeof context.framework === 'string' ? context.framework : '';
+  const reflectionContext = typeof context.reflectionContext === 'string' ? context.reflectionContext : '';
+  const sink = typeof context.sink === 'string' ? context.sink : '';
+  const params = Array.isArray(context.params) ? context.params : [];
   // A per-request nonce nudges the model off its single "textbook" answer.
   const nonce = Math.random().toString(36).slice(2, 8);
 
@@ -94,8 +98,17 @@ function buildGenerateMessages(context: Record<string, unknown> = {}) {
     'the named form field, plus a brief explanation of what it probes and the ' +
     'expected success indicator. Vary your technique, encoding, or evasion on ' +
     'each request — do NOT keep returning the single most common textbook ' +
-    'example. Output ONLY in this exact format: ' +
+    'example. If a framework, reflection context, or DOM sink is provided, ' +
+    'TAILOR the payload to break out of that specific context (e.g. attribute vs ' +
+    'JS-string vs HTML-body; innerHTML vs eval; React/Angular/Vue templating). ' +
+    'Output ONLY in this exact format: ' +
     '[PAYLOAD] <the raw payload> [EXPLANATION] <one or two sentences>.';
+
+  const grounding =
+    (framework ? `- Detected framework(s): ${framework}\n` : '') +
+    (reflectionContext ? `- Reflection context (where input lands): ${reflectionContext}\n` : '') +
+    (sink ? `- DOM sink: ${sink}\n` : '') +
+    (params.length ? `- Observed parameters: ${params.slice(0, 20).join(', ')}\n` : '');
 
   const user =
     `Context:\n` +
@@ -103,6 +116,7 @@ function buildGenerateMessages(context: Record<string, unknown> = {}) {
     `- Element Name: ${elementName}\n` +
     `- Test Type: ${testType}\n` +
     `- Target Vulnerability: ${vulnerability}\n` +
+    grounding +
     `- Variation token (ignore in output, use to vary the payload): ${nonce}\n\n` +
     `Generate a fresh, non-obvious payload now in the required ` +
     `[PAYLOAD] ... [EXPLANATION] ... format.`;
