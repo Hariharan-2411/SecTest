@@ -30,6 +30,9 @@ const BAND_ORDER = ['confirmed', 'likely', 'tentative', 'noise'];
 // All weights/caps live here so they're tunable and asserted directly by tests.
 export const RULES = {
   domXssBase: 30,
+  // A runtime canary that reached the sink (domProbe) is strong reachability
+  // evidence — additive, still human-verified for actual exploitability.
+  probeConfirmedBonus: 25,
   reflection: {
     js: 50,
     'html-body': 45,
@@ -133,6 +136,10 @@ function scoreDomXss(finding, reasons, needMore) {
     // A DOM source flowing to a dangerous sink is the core DOM-XSS evidence.
     score += RULES.taintedSinkBonus;
     reasons.push(`tainted source flows to sink "${finding.sink}"`);
+  }
+  if (finding.probeConfirmed) {
+    score += RULES.probeConfirmedBonus;
+    reasons.push('runtime canary reached the sink (confirmed reachability)');
   }
   return score;
 }

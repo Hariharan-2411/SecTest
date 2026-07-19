@@ -18,6 +18,11 @@ import { enrichFinding, enrichFindings } from '../../utils/enrich';
 import { normalizePlan, mapStepToAction, isSafeStep, canEscalate, remainingBudget, DEFAULT_ESCALATION_BUDGET } from '../../utils/escalation';
 import { assembleContext } from '../../utils/escalationContext';
 import { deriveChainGoals } from '../../utils/chainGoals';
+import { detectEscalationSignals } from '../../utils/signals';
+import { buildAttackGraph, proposeGraphChains, nodesOfType } from '../../utils/graph';
+import { buildPayloadContext } from '../../utils/payloadContext';
+import { DEFAULT_AUTONOMY, decideAutonomy } from '../../utils/autonomy';
+import { buildDomProbe } from '../../utils/domProbe';
 import { buildReport, REPORT_PLATFORMS, SEVERITIES } from '../../utils/reportBuilder';
 import {
   createProgram,
@@ -32,6 +37,7 @@ import { runReconLoop } from '../../utils/reconLoop';
 import { RISK_POLICY, DEFAULT_RECON_BUDGET } from '../../utils/reconAgent';
 import * as ai from '../../utils/aiProvider';
 import { DEFAULT_MODEL, decorate } from '../../utils/aiModels';
+import { modelForTask } from '../../utils/modelRouter';
 import { useToast } from '../../components/ToastProvider';
 import { useTheme } from '../../hooks/useTheme';
 import Login from './Login';
@@ -293,6 +299,7 @@ const Popup = () => {
   const [headerFindings, setHeaderFindings] = useState({}); // { [host]: {url, checkedAt, findings} }
   const [findings, setFindings] = useState({}); // unified findings store { [host]: Finding[] }
   const [findingsCrossHost, setFindingsCrossHost] = useState(false); // dedup across a program's subdomains
+  const [dismissedSignals, setDismissedSignals] = useState(() => new Set()); // session-dismissed escalation suggestions
   const [findingsMinBand, setFindingsMinBand] = useState('all'); // confidence threshold for the Findings list
   const [reportDraft, setReportDraft] = useState(null); // report-builder modal state
   const [aiReportBusy, setAiReportBusy] = useState(''); // '' | 'draft' | 'triage'
@@ -317,6 +324,8 @@ const Popup = () => {
   const [agentTool, setAgentTool] = useState('subfinder');
   const [agentProfile, setAgentProfile] = useState('quick');
   const [agentBusy, setAgentBusy] = useState(false);
+  const [oobCanary, setOobCanary] = useState(null); // { cid, url } minted OOB canary
+  const [oobBusy, setOobBusy] = useState(false);
   const [agentResult, setAgentResult] = useState(null);
   const [watchList, setWatchList] = useState([]);
   const [watchInterval, setWatchInterval] = useState(360);
@@ -334,6 +343,9 @@ const Popup = () => {
   const [llmLoading, setLlmLoading] = useState(false);
   const [aiModel, setAiModel] = useState(DEFAULT_MODEL); // selected Groq model id
   const [aiModels, setAiModels] = useState(() => decorate()); // decorated list
+  const [autoRouteModels, setAutoRouteModels] = useState(true); // route each AI task to its best-fit model tier
+  const routeModel = (task) => modelForTask(task, { selected: aiModel, models: aiModels, autoRoute: autoRouteModels });
+  const [autonomyLevel, setAutonomyLevel] = useState(DEFAULT_AUTONOMY); // manual | assisted | auto-safe
   const [aiReachable, setAiReachable] = useState(null); // null=checking, bool=result
   const [aiError, setAiError] = useState('');
   const [chatMessages, setChatMessages] = useState([]); // {role:'user'|'assistant', content}
@@ -363,7 +375,7 @@ const Popup = () => {
     // Load settings from storage
     chrome.storage.local.get(
       ['allowlist', 'scope', 'passiveCapture', 'inventory', 'apiInventory', 'graphqlSurface', 'apiTests', 'wsEndpoints', 'wsFrames', 'headerFindings', 'findings', 'dryRunMode', 'auditLog', 'aiModel', 'checklistStore',
-       'jsWatch', 'programs', 'submissions', 'notifyConfig', 'jsMonitor', 'agentConfig'],
+       'jsWatch', 'programs', 'submissions', 'notifyConfig', 'jsMonitor', 'agentConfig', 'autoRouteModels', 'autonomyLevel'],
       (result) => {
         setJsWatch(result.jsWatch || {});
         setHeaderFindings(result.headerFindings || {});
@@ -394,6 +406,8 @@ const Popup = () => {
         setPayloadHistory(result.payloadHistory || []);
         setChecklistStore(result.checklistStore || {});
         if (result.aiModel) setAiModel(result.aiModel);
+        if (result.autoRouteModels !== undefined) setAutoRouteModels(result.autoRouteModels);
+        if (result.autonomyLevel) setAutonomyLevel(result.autonomyLevel);
       }
     );
 
@@ -710,7 +724,7 @@ const Popup = () => {
     });
     // Best-effort LLM upgrade of the rationale — never blocks, never throws, silently
     // keeps the fallback if no provider. Only patches if this draft is still open.
-    explainConfidence(f, v, { chat: ai.chat, model: aiModel }).then(({ prose, source }) => {
+    explainConfidence(f, v, { chat: ai.chat, model: routeModel('confidenceProse') }).then(({ prose, source }) => {
       if (source !== 'llm') return;
       setReportDraft((prev) => (prev && prev._proseToken === proseToken ? { ...prev, rationale: prose } : prev));
     });
@@ -724,7 +738,7 @@ const Popup = () => {
     if (!list.length) { toast.info('No findings to chain yet.'); return; }
     setChainsBusy(true);
     try {
-      const res = await proposeChains(list, { model: aiModel, scope });
+      const res = await proposeChains(list, { model: routeModel('chains'), scope });
       if (res.source === 'error') { toast.error('Chain proposal failed — AI unavailable or returned no valid JSON.'); return; }
       if (!res.chains.length) { toast.info('No grounded chains proposed.'); return; }
       setChains(res);
@@ -763,7 +777,7 @@ const Popup = () => {
         recon,
         chainGoals,
       });
-      const { steps: rawSteps } = await ai.escalateFinding(finding, context, aiModel);
+      const { steps: rawSteps } = await ai.escalateFinding(finding, context, routeModel('escalate'));
       const { steps, rejected } = normalizePlan(rawSteps, { scope, host });
       setEscalation({ finding, steps, rejected, depth, chainGoals, loading: false });
       if (!steps.length) toast.info('No actionable escalation steps proposed.');
@@ -773,6 +787,31 @@ const Popup = () => {
     } finally {
       setEscalationBusy(false);
     }
+  };
+
+  // B2 — run a whitelisted DOM-XSS reachability probe (gated active: Dry-Run +
+  // confirm). The pure layer builds the DATA descriptor; the MAIN-world runner only
+  // sets a benign canary and observes whether it reaches the sink — never executes
+  // model output or exploit code. On confirmation, the finding is marked so the
+  // validation gate raises its confidence.
+  const runDomProbe = (finding) => {
+    const descriptor = buildDomProbe(finding);
+    if (!descriptor) { toast.info('No supported sink/source on this finding to probe.'); return; }
+    confirmAndExecute('DOM-XSS reachability probe', { name: finding.title || 'dom-xss', type: 'runtime confirmation' }, () => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tab = tabs && tabs[0];
+        if (!tab) { toast.error('No active tab.'); return; }
+        chrome.tabs.sendMessage(tab.id, { action: 'runDomProbe', descriptor }, (resp) => {
+          if (chrome.runtime.lastError || !resp) { toast.error('Probe failed — content script not reachable.'); return; }
+          if (resp.confirmed) {
+            toast.success(`Confirmed — ${resp.evidence}`);
+            chrome.runtime.sendMessage({ action: 'confirmDomXss', findingId: finding.id, pageUrl: tab.url || currentUrl }, () => { void chrome.runtime.lastError; refreshFindings(); });
+          } else {
+            toast.info(resp.evidence || 'Not confirmed.');
+          }
+        });
+      });
+    });
   };
 
   // Resolve library payloads for a family and run them on the scanned page fields.
@@ -837,6 +876,7 @@ const Popup = () => {
   // Convenience: run only the read-only/dry-run-safe steps in one click (bounded
   // by the remaining session budget).
   const runSafeSteps = () => {
+    if (decideAutonomy(autonomyLevel, 'safe') !== 'run') { toast.info('Manual mode — run each safe step individually.'); return; }
     const budget = remainingBudget(escBudgetUsed);
     if (budget <= 0) { toast.error('Escalation action budget exhausted for this session.'); return; }
     const safe = (escalation?.steps || []).filter(isSafeStep).slice(0, budget);
@@ -1415,12 +1455,14 @@ const Popup = () => {
     const vuln = DEFAULT_VULNS.find(v => v.key === selectedVuln);
     setLlmLoading(true);
     try {
-      const suggestion = await ai.generatePayload({
-        elementType: 'input',
-        elementName: '*',
-        testType: 'Payload Generation',
-        vulnerability: vuln?.label || selectedVuln,
-      }, aiModel);
+      const suggestion = await ai.generatePayload(
+        buildPayloadContext(vuln || selectedVuln, {
+          inventory: inventory[currentHost],
+          findings: findings[currentHost] || [],
+          recon,
+        }),
+        routeModel('payload')
+      );
       setLlmPayload(suggestion.payload || '');
       setLlmExplanation(suggestion.explanation || '');
       setPayloadSource('llm');
@@ -1942,6 +1984,10 @@ const Popup = () => {
         <button className={"tab" + (activeTab === 'Findings' ? ' active' : '')} onClick={() => setActiveTab('Findings')} aria-label="Findings">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 22V4a1 1 0 0 1 1-1h11l-2 4 2 4H5"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
           Findings
+        </button>
+        <button className={"tab" + (activeTab === 'Graph' ? ' active' : '')} onClick={() => setActiveTab('Graph')} aria-label="Graph">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><line x1="7" y1="6" x2="17" y2="6"/><line x1="6" y1="8" x2="11" y2="16"/><line x1="18" y1="8" x2="13" y2="16"/></svg>
+          Graph
         </button>
         <button className={"tab" + (activeTab === 'Checklist' ? ' active' : '')} onClick={() => setActiveTab('Checklist')} aria-label="Checklist">
           <IconChecklist />Checklist
@@ -2901,6 +2947,29 @@ const Popup = () => {
                 {agentBusy ? 'Running…' : 'Run'}
               </button>
             </div>
+            <div className="oob-panel" style={{ marginTop: 8, fontSize: 11 }}>
+              <div style={{ fontWeight: 600 }}>OOB / blind confirmation</div>
+              <div className="muted">Mint a canary callback URL, embed it in a blind candidate (SSRF / blind SQLi), then poll — a recorded interaction proves the backend reached out.</div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button className="btn-small" disabled={oobBusy} onClick={() => {
+                  setOobBusy(true);
+                  chrome.runtime.sendMessage({ action: 'oobNew' }, (resp) => {
+                    setOobBusy(false);
+                    if (resp && resp.cid) { setOobCanary({ cid: resp.cid, url: resp.url }); toast.success('Canary minted — embed the URL, then poll'); }
+                    else toast.error('OOB unavailable — enable it in the companion agent.');
+                  });
+                }}>Mint canary</button>
+                <button className="btn-small" disabled={oobBusy || !oobCanary} onClick={() => {
+                  setOobBusy(true);
+                  chrome.runtime.sendMessage({ action: 'oobPoll', cid: oobCanary.cid }, (resp) => {
+                    setOobBusy(false);
+                    if (resp && resp.confirmed) toast.success(`Confirmed — ${resp.evidence}`);
+                    else toast.info(resp && resp.evidence ? resp.evidence : 'No interaction yet.');
+                  });
+                }}>Poll</button>
+                {oobCanary && <code style={{ fontSize: 10, wordBreak: 'break-all' }}>{oobCanary.url}</code>}
+              </div>
+            </div>
             {agentResult && agentResult.error && (
               <div className="hint">Agent error: {agentResult.error}{agentResult.reason ? ` (${agentResult.reason})` : ''}</div>
             )}
@@ -3184,6 +3253,33 @@ const Popup = () => {
               ))}
             </div>
 
+            {(() => {
+              const suggestions = detectEscalationSignals(scored, { scope }).filter((x) => !dismissedSignals.has(x.findingId));
+              if (!suggestions.length) return null;
+              return (
+                <div className="find-suggestions" style={{ margin: '8px 0', padding: 8, border: '1px solid var(--border, #333)', borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>⚡ Suggested next moves</div>
+                  {suggestions.map((x) => {
+                    const finding = scored.find((f) => f.id === x.findingId);
+                    return (
+                      <div key={x.findingId} className="find-suggestion" style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 11, marginTop: 4 }}>
+                        <span style={{ flex: 1 }}>
+                          {x.chainLink && <span title="advances an exploit chain">⛓ </span>}
+                          <strong>{x.title || x.type}</strong>
+                          <span className="muted"> — {x.reason}</span>
+                        </span>
+                        <button className="btn-small" disabled={!finding} onClick={() => finding && runEscalate(finding)}>Escalate</button>
+                        {finding && finding.type === 'dom-xss' && (
+                          <button className="btn-small" onClick={() => runDomProbe(finding)} title="Runtime canary reachability check (gated: Dry-Run + confirm)">Confirm</button>
+                        )}
+                        <button className="link-btn" title="Dismiss" onClick={() => setDismissedSignals((prev) => new Set(prev).add(x.findingId))}>×</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
             {sorted.length === 0 && scored.length > 0 ? (
               <div className="find-empty">
                 <span className="find-empty-icon">{shieldCheck}</span>
@@ -3234,6 +3330,81 @@ const Popup = () => {
                 })}
               </div>
             )}
+          </div>
+        );
+      })()}
+
+      {activeTab === 'Graph' && (() => {
+        const all = findingsCrossHost ? Object.values(findings).flat() : ((currentHost && findings[currentHost]) || []);
+        const flat = validateFindings(dedupeFindings(all, { crossHost: findingsCrossHost }));
+        const g = buildAttackGraph({ findings: flat, inventory, scope });
+        const graphChains = proposeGraphChains(g, { findings: flat, scope }).chains;
+        const counts = {
+          host: nodesOfType(g, 'host').length,
+          finding: nodesOfType(g, 'finding').length,
+          endpoint: nodesOfType(g, 'endpoint').length,
+          secret: nodesOfType(g, 'secret').length,
+        };
+        const findingNodes = nodesOfType(g, 'finding');
+        const leadsTo = g.edges.filter((e) => e.rel === 'leads-to');
+        const cols = Math.max(1, Math.ceil(Math.sqrt(findingNodes.length)));
+        const cell = 72;
+        const pos = new Map(findingNodes.map((n, i) => [n.id, { x: 34 + (i % cols) * cell, y: 40 + Math.floor(i / cols) * cell }]));
+        const svgH = Math.max(120, 60 + Math.ceil(findingNodes.length / cols) * cell);
+        return (
+          <div className="recon-panel">
+            <div className="checklist-head">
+              <h3>Attack Graph {currentHost && !findingsCrossHost && <span className="muted">· {currentHost}</span>}</h3>
+            </div>
+            <p className="checklist-sub">
+              Findings + surface projected into one graph; <strong>leads-to</strong> edges are candidate exploit paths — validated, human-verified, nothing runs.
+            </p>
+            <label className="find-toggle">
+              <input type="checkbox" checked={findingsCrossHost} onChange={(e) => setFindingsCrossHost(e.target.checked)} />
+              <span>Merge across all hosts <span className="find-toggle-sub">· program-wide</span></span>
+            </label>
+            <div className="muted" style={{ fontSize: 11, margin: '6px 0' }}>
+              {counts.host} hosts · {counts.finding} findings · {counts.endpoint} endpoints · {counts.secret} secrets · {leadsTo.length} exploit edges
+            </div>
+            {findingNodes.length === 0 ? (
+              <div className="hint">No in-scope findings to graph yet.</div>
+            ) : (
+              <svg width="304" height={svgH} style={{ border: '1px solid var(--border,#333)', borderRadius: 6, maxWidth: '100%' }}>
+                <defs>
+                  <marker id="iris-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+                    <path d="M0,0 L7,3 L0,6 Z" fill="#888" />
+                  </marker>
+                </defs>
+                {leadsTo.map((e, i) => {
+                  const a = pos.get(e.from);
+                  const b = pos.get(e.to);
+                  if (!a || !b) return null;
+                  return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#888" strokeWidth="1.5" markerEnd="url(#iris-arrow)" />;
+                })}
+                {findingNodes.map((n) => {
+                  const p = pos.get(n.id);
+                  return (
+                    <g key={n.id}>
+                      <circle cx={p.x} cy={p.y} r="6" fill="var(--accent,#3B5BDB)" />
+                      <text x={p.x + 9} y={p.y + 3} fontSize="9" fill="currentColor">{(n.data && n.data.type) || n.label}</text>
+                    </g>
+                  );
+                })}
+              </svg>
+            )}
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Attack paths ({graphChains.length})</div>
+              {graphChains.length === 0 ? (
+                <div className="hint">No multi-step exploit paths across these findings yet.</div>
+              ) : (
+                graphChains.map((c) => (
+                  <div key={c.id} className="agent-finding" style={{ fontSize: 11, marginTop: 4 }}>
+                    <span className="sev-badge">{c.severity}</span> <strong>{c.title}</strong>
+                    <div className="muted">{c.steps.map((s) => s.type).join(' → ')}</div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         );
       })()}
@@ -4024,6 +4195,23 @@ const Popup = () => {
                   <option key={m.id} value={m.id}>{m.label}</option>
                 ))}
               </select>
+              <label className="ai-autoroute" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={autoRouteModels}
+                  onChange={(e) => { setAutoRouteModels(e.target.checked); chrome.storage.local.set({ autoRouteModels: e.target.checked }); }}
+                />
+                <span>Auto-route models per task <span className="muted">— fast for payloads, reasoning for chains/escalation; off = always use the model above</span></span>
+              </label>
+              <label className="ai-autonomy" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12 }}>
+                <span>Autonomy</span>
+                <select value={autonomyLevel} onChange={(e) => { setAutonomyLevel(e.target.value); chrome.storage.local.set({ autonomyLevel: e.target.value }); }}>
+                  <option value="manual">Manual — trigger every step</option>
+                  <option value="assisted">Assisted — safe auto-runs, active gates</option>
+                  <option value="auto-safe">Auto-safe — safe auto-runs across hops, active gates</option>
+                </select>
+                <span className="muted">— active steps always require approval</span>
+              </label>
               <div className="ai-status-row">
                 <span className={`ai-dot ai-dot-${aiReachable === null ? 'checking' : aiReachable ? 'ok' : 'down'}`} />
                 <span className="ai-status-text">
@@ -4096,7 +4284,7 @@ const Popup = () => {
             <div className="checklist-head">
               <h3>⚡ Escalate <span className="muted" style={{ fontSize: 12 }}>· {escalation.finding.title}</span></h3>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <button className="link-btn" disabled={escalationBusy || !(escalation.steps || []).some(isSafeStep)} onClick={runSafeSteps}>Run safe steps</button>
+                <button className="link-btn" disabled={escalationBusy || decideAutonomy(autonomyLevel, 'safe') !== 'run' || !(escalation.steps || []).some(isSafeStep)} onClick={runSafeSteps} title={decideAutonomy(autonomyLevel, 'safe') !== 'run' ? 'Manual autonomy — run each step individually' : 'Auto-run the safe steps'}>Run safe steps</button>
                 <button className="link-btn" onClick={() => setEscalation(null)}>Close</button>
               </div>
             </div>
@@ -4182,7 +4370,7 @@ const Popup = () => {
                       if (!evidence.trim()) { toast.info('Add a title or evidence first.'); return; }
                       setAiReportBusy('draft');
                       try {
-                        const d = await ai.draftFinding(evidence, aiModel);
+                        const d = await ai.draftFinding(evidence, routeModel('report'));
                         setReportDraft((prev) => ({
                           ...prev,
                           summary: d.summary || prev.summary,
@@ -4206,7 +4394,7 @@ const Popup = () => {
                       try {
                         const v = await ai.classifyResponse(
                           { request: reportDraft.title, response: reportDraft.evidence, context: { type: reportDraft.ref, target: reportDraft.target } },
-                          aiModel
+                          routeModel('triage')
                         );
                         if (SEVERITIES.includes(v.severity)) upd('severity', v.severity);
                         toast[v.likelyVuln ? 'success' : 'info'](`AI: ${v.likelyVuln ? 'likely vulnerable' : 'weak/none'} · ${v.severity}${v.reason ? ' — ' + v.reason : ''}`);

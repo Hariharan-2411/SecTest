@@ -7,6 +7,7 @@ import {
 } from '../../utils/extraction';
 import { isInScope } from '../../utils/scope';
 import { summarizeReflection, makeMarker } from '../../utils/reflection';
+import { classifyProbeResult } from '../../utils/domProbe';
 
 // Independent scope guard for the content script. DOM-mutating actions (payload
 // injection, file attach) are real side effects, so they must be gated on scope
@@ -311,10 +312,57 @@ window.addEventListener('message', (e) => {
   } catch (_) {}
 });
 
+// Relay console/error/CSP observations from the MAIN-world observer, scope-gated.
+// The background normalizes them (endpoints, secrets, CSP violations) and folds
+// them into inventory + findings. Observe-only.
+window.addEventListener('message', (e) => {
+  const d = e && e.data;
+  if (!d || d.__iris_console !== true || e.source !== window) return;
+  if (!inScopeHere()) return;
+  if (!Array.isArray(d.events) || !d.events.length) return;
+  try {
+    chrome.runtime.sendMessage(
+      { action: 'consoleEvents', pageUrl: window.location.href, events: d.events },
+      () => {
+        void chrome.runtime.lastError;
+      }
+    );
+  } catch (_) {}
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'ping') {
     sendResponse({ ok: true });
     return true;
+  }
+
+  // B2 — run a whitelisted DOM-XSS canary probe: bridge the DATA descriptor to the
+  // MAIN-world runner, await its observation, classify it. Scope-gated. Observe-only.
+  if (request.action === 'runDomProbe') {
+    if (!inScopeHere()) { sendResponse({ success: false, reason: 'out_of_scope' }); return true; }
+    const desc = request.descriptor || {};
+    const id = 'probe_' + Math.random().toString(36).slice(2);
+    let done = false;
+    const onResult = (e) => {
+      const d = e && e.data;
+      if (!d || d.__iris_probe_result !== true || e.source !== window || d.id !== id) return;
+      finish({ success: true, ...classifyProbeResult(d.result, { canary: d.canary }), findingId: d.findingId });
+    };
+    const timer = setTimeout(() => finish({ success: true, confirmed: false, evidence: 'probe timed out' }), 2000);
+    function finish(payload) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      window.removeEventListener('message', onResult);
+      sendResponse(payload);
+    }
+    window.addEventListener('message', onResult);
+    try {
+      window.postMessage({ __iris_probe_run: true, id, descriptor: desc }, '*');
+    } catch (_) {
+      finish({ success: false, reason: 'post_failed' });
+    }
+    return true; // async
   }
 
   if (request.action === 'scanPage') {
