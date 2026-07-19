@@ -46,7 +46,7 @@ export function pickRelevantEndpoints(endpoints, param) {
  * @param {{inventory?:object, findings?:object[], recon?:object}} sources
  * @returns compact object safe to send to the model
  */
-export function assembleContext(finding = {}, { inventory = {}, findings = [], recon = null } = {}) {
+export function assembleContext(finding = {}, { inventory = {}, findings = [], recon = null, chainGoals = null } = {}) {
   const param = paramHint(finding);
 
   const f = {
@@ -86,6 +86,9 @@ export function assembleContext(finding = {}, { inventory = {}, findings = [], r
   return {
     host: str(finding.host, 200),
     finding: f,
+    // Placed BEFORE inventory so the highest-value grounding survives the proxy's
+    // context clamp. Only present when there's a real goal to hunt.
+    ...(Array.isArray(chainGoals) && chainGoals.length ? { chainGoals } : {}),
     inventory: inventoryCtx,
     relatedFindings,
     ...(reconMini ? { recon: reconMini } : {}),

@@ -84,3 +84,31 @@ describe('assembleContext', () => {
     expect(c.relatedFindings).toEqual([]);
   });
 });
+
+describe('assembleContext — chainGoals passthrough', () => {
+  const goals = [
+    {
+      playbookId: 'xss-secret-ato',
+      name: 'DOM-XSS → exposed token → account takeover',
+      have: ['dom-xss'],
+      missing: [{ linkId: 'token', label: 'Exposed token/secret', types: ['jwt'], hint: { verbs: ['deep_js'], note: 'scan JS' } }],
+    },
+  ];
+
+  it('includes chainGoals when a non-empty array is provided', () => {
+    const c = assembleContext({ type: 'dom-xss', title: 'XSS' }, { chainGoals: goals });
+    expect(c.chainGoals).toEqual(goals);
+  });
+
+  it('places chainGoals before inventory so it survives the prompt clamp', () => {
+    const c = assembleContext({ type: 'dom-xss', title: 'XSS' }, { chainGoals: goals });
+    const keys = Object.keys(c);
+    expect(keys.indexOf('chainGoals')).toBeGreaterThanOrEqual(0);
+    expect(keys.indexOf('chainGoals')).toBeLessThan(keys.indexOf('inventory'));
+  });
+
+  it('omits chainGoals when absent or empty', () => {
+    expect('chainGoals' in assembleContext({ type: 'dom-xss' }, {})).toBe(false);
+    expect('chainGoals' in assembleContext({ type: 'dom-xss' }, { chainGoals: [] })).toBe(false);
+  });
+});

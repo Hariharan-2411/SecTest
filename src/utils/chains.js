@@ -19,9 +19,12 @@
 // never throws — any failure yields zero chains.
 
 import { evaluateScope } from './scope';
-import { FINDING_SEVERITIES, sortFindings } from './findings';
+import { sortFindings, deriveSeverity } from './findings';
 import { BANDS, scoreFinding, validateFindings } from './validate';
 import * as ai from './aiProvider';
+import { PLAYBOOKS, matchPlaybooks } from './chainPlaybooks';
+
+export { deriveSeverity };
 
 export const MAX_CHAINS = 8;
 export const MAX_STEPS = 6;
@@ -57,19 +60,6 @@ function hostInScope(host, scope) {
   if (!h) return true; // no host to check
   const url = /^https?:\/\//i.test(h) ? h : `https://${h}`;
   return evaluateScope(url, scope).allowed;
-}
-
-/**
- * Strongest constituent severity, bumped one level (capped 'critical'), because a
- * validated multi-step chain demonstrates more impact than any single part.
- */
-export function deriveSeverity(constituents) {
-  const idxs = (Array.isArray(constituents) ? constituents : [])
-    .map((f) => FINDING_SEVERITIES.indexOf(f && f.severity))
-    .filter((i) => i >= 0);
-  if (!idxs.length) return 'informational';
-  const base = Math.min(...idxs); // lower index = higher severity
-  return FINDING_SEVERITIES[Math.max(0, base - 1)];
 }
 
 /** Keep a CVSS 3.1 vector string as a display label, or null. Format-check only. */
@@ -149,7 +139,7 @@ export function normalizeChains(rawPlan, { findings, scope } = {}) {
  * Build the (single user) prompt that grounds the model in a bounded slice of the
  * finding set and asks for JSON chains referencing finding ids only. Pure.
  */
-export function buildChainsPrompt(findings) {
+export function buildChainsPrompt(findings, { playbookMatches } = {}) {
   const top = sortFindings(Array.isArray(findings) ? findings : []).slice(
     0,
     MAX_CONTEXT_FINDINGS
@@ -163,13 +153,34 @@ export function buildChainsPrompt(findings) {
         80
       )}`
   );
+  const partial = (Array.isArray(playbookMatches) ? playbookMatches : []).filter(
+    (m) => m && m.complete === false
+  );
+  let grounding = '';
+  if (partial.length) {
+    const pbLines = partial
+      .slice(0, MAX_CHAINS)
+      .map(
+        (m) =>
+          `- ${clip(m.name, 120)}: have [${(m.satisfied || [])
+            .map((s) => s.linkId)
+            .join(', ')}], missing [${(m.missing || [])
+            .map((x) => x.linkId)
+            .join(', ')}]`
+      );
+    grounding =
+      '\n\nKnown chain patterns partially matched (prefer chains that complete the MISSING links):\n' +
+      pbLines.join('\n');
+  }
   const content =
     'You are a web application penetration tester reviewing already-discovered, in-scope findings. ' +
     'Propose plausible EXPLOIT CHAINS that combine two or more of these findings into higher impact ' +
     '(e.g. SSRF -> cloud metadata -> IAM keys; XSS -> cookie theft -> account takeover; IDOR -> privilege escalation). ' +
     'Reference ONLY the finding ids listed below — do not invent findings. Each chain needs at least two steps. ' +
     'Return JSON only: {"chains":[{"title","steps":[{"findingId","note"}],"cvss","rationale"}]}.\n\n' +
-    `Findings:\n${lines.join('\n') || '- (none)'}\n\nJSON only:`;
+    `Findings:\n${lines.join('\n') || '- (none)'}` +
+    grounding +
+    '\n\nJSON only:';
   return { messages: [{ role: 'user', content }] };
 }
 
@@ -191,25 +202,67 @@ function safeParse(text) {
   }
 }
 
+// Collapse chains that rest on the same finding-id set (order-insensitive), so an
+// LLM proposal duplicating a deterministic playbook chain is shown once. First wins.
+function dedupeChains(chains) {
+  const seen = new Set();
+  const out = [];
+  for (const c of Array.isArray(chains) ? chains : []) {
+    const key = [...(Array.isArray(c.findingIds) ? c.findingIds : [])].sort().join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
 /**
  * Ask the model for exploit chains, then validate them. Impure via the injected
  * `chat` (defaults to aiProvider.chat). Never throws.
- * @returns {Promise<{chains:object[], rejected:object[], source:'llm'|'error'}>}
+ * @returns {Promise<{chains:object[], rejected:object[], source:'llm'|'playbook'|'error'}>}
  */
 export async function proposeChains(findings, { chat, model, scope } = {}) {
   const call = chat || ai.chat;
+  const validated = validateFindings(findings);
+  const matches = matchPlaybooks(validated, { scope });
+  const partial = matches.filter((m) => !m.complete);
+  const pbById = new Map(PLAYBOOKS.map((p) => [p.id, p]));
+  // Complete playbook matches -> raw chains, validated by the SAME normalizeChains.
+  const deterministicRaw = matches
+    .filter((m) => m.complete)
+    .map((m) => ({
+      title: m.name,
+      steps: m.satisfied.map((s) => ({ findingId: s.findingId, note: '' })),
+      rationale: (pbById.get(m.playbookId) || {}).impact || '',
+      cvss: null,
+    }));
+
+  let llmOk = false;
+  let llmRaw = [];
   try {
-    const validated = validateFindings(findings);
-    const { messages } = buildChainsPrompt(validated);
+    const { messages } = buildChainsPrompt(validated, { playbookMatches: partial });
     const reply = await call(messages, model);
     const parsed = safeParse(reply);
-    if (!parsed) return { chains: [], rejected: [], source: 'error' };
-    const { chains, rejected } = normalizeChains(parsed, {
-      findings: validated,
-      scope,
-    });
-    return { chains, rejected, source: 'llm' };
+    if (parsed) {
+      llmOk = true;
+      llmRaw = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed.chains)
+        ? parsed.chains
+        : [];
+    }
   } catch (_) {
-    return { chains: [], rejected: [], source: 'error' };
+    llmOk = false;
   }
+
+  // Deterministic first so they win de-duplication over an identical LLM proposal.
+  const { chains, rejected } = normalizeChains([...deterministicRaw, ...llmRaw], {
+    findings: validated,
+    scope,
+  });
+  const deduped = dedupeChains(chains);
+  // `source` reflects whether the model reply parsed, not chain provenance — a
+  // complete playbook still emits its (deterministic) chain even when source is 'llm'.
+  const source = llmOk ? 'llm' : deduped.length ? 'playbook' : 'error';
+  return { chains: deduped, rejected, source };
 }

@@ -7,6 +7,7 @@ import {
   sortFindings,
   summarizeFindings,
   toReportFinding,
+  deriveSeverity,
 } from '../src/utils/findings';
 
 describe('normalizeFinding', () => {
@@ -80,5 +81,14 @@ describe('toReportFinding', () => {
   it('maps into the report builder shape', () => {
     const r = toReportFinding({ title: 'SQLi', host: 'x.com', severity: 'high', ref: 'CWE-89', evidence: 'delta' });
     expect(r).toEqual({ title: 'SQLi', target: 'x.com', severity: 'high', ref: 'CWE-89', summary: 'delta', evidence: 'delta' });
+  });
+});
+
+describe('deriveSeverity (relocated from chains)', () => {
+  it('bumps the strongest constituent one level, capped at critical', () => {
+    expect(deriveSeverity([{ severity: 'medium' }, { severity: 'high' }])).toBe('critical');
+    expect(deriveSeverity([{ severity: 'low' }, { severity: 'low' }])).toBe('medium');
+    expect(deriveSeverity([{ severity: 'critical' }])).toBe('critical');
+    expect(deriveSeverity([])).toBe('informational');
   });
 });

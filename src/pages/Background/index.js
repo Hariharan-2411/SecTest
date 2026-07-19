@@ -39,6 +39,8 @@ import {
 } from '../../utils/websocket';
 import { analyzeHeaders, mergeHeaderFindings } from '../../utils/headers';
 import { upsertFindings as upsertFindingsList } from '../../utils/findings';
+import { analyzeConsoleEvents } from '../../utils/consoleRecon';
+import { classifyOobInteractions, markOobResult } from '../../utils/oobConfirm';
 import {
   buildVariantUrl,
   firstParam,
@@ -128,6 +130,32 @@ async function recordObservation(pageUrl, observation) {
       );
     });
   });
+}
+
+// Fold MAIN-world console/error/CSP observations into inventory + findings.
+// Scope-gated; endpoints/secrets extend the inventory, CSP violations become
+// informational findings. Observe-only.
+async function recordConsoleEvents(pageUrl, events) {
+  const { scope, passiveCapture } = await getSettings();
+  if (!passiveCapture) return { success: false, reason: 'capture_disabled' };
+  const { allowed, host } = evaluateScope(pageUrl, scope);
+  if (!allowed) return { success: false, reason: 'out_of_scope', host };
+
+  const { endpoints, secrets, cspViolations } = analyzeConsoleEvents(events);
+  if (endpoints.length || secrets.length) {
+    await recordObservation(pageUrl, { endpoints, secrets });
+  }
+  const cspFindings = cspViolations.map((c) => ({
+    host,
+    type: 'csp-violation',
+    severity: 'informational',
+    title: `CSP blocked ${c.directive || 'a resource'}`,
+    evidence: `blocked-uri: ${c.blockedURI || '(inline)'}`,
+    source: 'console',
+    ref: `csp:${c.directive}:${c.blockedURI}`,
+  }));
+  if (cspFindings.length) await persistFindingsGrouped(cspFindings);
+  return { success: true, host, endpoints: endpoints.length, secrets: secrets.length, csp: cspViolations.length };
 }
 
 // --- Passive security-header analysis (webRequest, observe-only) -----------
@@ -996,6 +1024,53 @@ async function agentRunWatch(id) {
   return agentFetch('/watch/' + encodeURIComponent(id) + '/run', { method: 'POST' });
 }
 
+// D1 — out-of-band / blind confirmation. Mint a canary callback URL from the
+// companion agent, then poll it; a recorded interaction confirms a blind bug and
+// marks the finding so the validation gate scores it confirmed. Agent-gated.
+async function oobNew() {
+  return agentFetch('/oob/new', { method: 'POST' });
+}
+
+async function oobPoll({ cid, findingId, pageUrl }) {
+  const resp = await agentFetch('/oob/poll?cid=' + encodeURIComponent(cid || ''));
+  const result = classifyOobInteractions(resp && resp.interactions, { cid });
+  let updated = false;
+  if (result.confirmed && findingId && pageUrl) {
+    const { scope } = await getSettings();
+    const { allowed, host } = evaluateScope(pageUrl, scope);
+    if (allowed) {
+      const r = await storageGet(['findings']);
+      const store = r.findings || {};
+      const list = (store[host] || []).slice();
+      const idx = list.findIndex((f) => f && f.id === findingId);
+      if (idx !== -1) {
+        list[idx] = markOobResult(list[idx], result);
+        store[host] = list;
+        await storageSet({ findings: store });
+        updated = true;
+      }
+    }
+  }
+  return { success: true, ...result, updated };
+}
+
+// B2 — mark a DOM-XSS finding as runtime-confirmed (canary reached the sink), so
+// the validation gate's probeConfirmed bonus raises its confidence. Scope-gated.
+async function confirmDomXss({ findingId, pageUrl }) {
+  const { scope } = await getSettings();
+  const { allowed, host } = evaluateScope(pageUrl, scope);
+  if (!allowed) return { success: false, reason: 'out_of_scope' };
+  const r = await storageGet(['findings']);
+  const store = r.findings || {};
+  const list = (store[host] || []).slice();
+  const idx = list.findIndex((f) => f && f.id === findingId);
+  if (idx === -1) return { success: false, reason: 'not_found' };
+  list[idx] = { ...list[idx], probeConfirmed: true };
+  store[host] = list;
+  await storageSet({ findings: store });
+  return { success: true, host };
+}
+
 async function agentScan({ tool, target, profile }) {
   const { scope } = await getSettings();
   // Client-side scope pre-check for a fast, clear error; the agent re-checks too.
@@ -1172,6 +1247,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // async
   }
 
+  if (request.action === 'consoleEvents') {
+    recordConsoleEvents(request.pageUrl, request.events || [])
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
   if (request.action === 'getWsSurface') {
     getWsSurface(request.pageUrl)
       .then(sendResponse)
@@ -1193,6 +1275,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'agentSyncScope') {
     agentSyncScope().then(sendResponse).catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'oobNew') {
+    oobNew().then(sendResponse).catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'oobPoll') {
+    oobPoll({ cid: request.cid, findingId: request.findingId, pageUrl: request.pageUrl })
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
+  if (request.action === 'confirmDomXss') {
+    confirmDomXss({ findingId: request.findingId, pageUrl: request.pageUrl })
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
     return true; // async
   }
 

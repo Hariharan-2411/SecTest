@@ -277,3 +277,51 @@ describe('proposeChains — orchestrator (injected chat, no network)', () => {
     expect(r.chains).toEqual([]);
   });
 });
+
+describe('chain playbooks wiring', () => {
+  const pbScope = { inScope: ['*.example.com', 'example.com'], outOfScope: [] };
+  // Confidence is recomputed by validateFindings, so give real evidence:
+  //   dom-xss with html-body reflection -> 75; jwt secret -> 50 (both >= tentative).
+  const fXss = { id: 'a', type: 'dom-xss', severity: 'medium', host: 'app.example.com', title: 'XSS', reflection: 'html-body' };
+  const fJwt = { id: 'b', type: 'jwt', severity: 'high', host: 'app.example.com', title: 'JWT in JS' };
+
+  it('emits a deterministic chain from a complete playbook even when the LLM fails', async () => {
+    const r = await proposeChains([fXss, fJwt], {
+      chat: async () => { throw new Error('offline'); },
+      scope: pbScope,
+    });
+    expect(r.source).toBe('playbook');
+    expect(r.chains).toHaveLength(1);
+    expect([...r.chains[0].findingIds].sort()).toEqual(['a', 'b']);
+    expect(r.chains[0].severity).toBe('critical');
+  });
+
+  it('buildChainsPrompt appends a grounding block for partial matches', () => {
+    const partial = [
+      { playbookId: 'xss-secret-ato', name: 'DOM-XSS → exposed token → account takeover', complete: false,
+        satisfied: [{ linkId: 'xss', findingId: 'a', type: 'dom-xss' }],
+        missing: [{ linkId: 'token', label: 'Exposed token/secret', match: { types: ['jwt'] } }] },
+    ];
+    const content = buildChainsPrompt([fXss], { playbookMatches: partial }).messages[0].content;
+    expect(content).toMatch(/partially matched/i);
+    expect(content).toContain('DOM-XSS → exposed token → account takeover');
+    expect(content).toContain('token');
+  });
+
+  it('buildChainsPrompt is unchanged when called with no playbook matches', () => {
+    const content = buildChainsPrompt([fXss]).messages[0].content;
+    expect(content).not.toMatch(/partially matched/i);
+  });
+
+  it('a deterministic playbook chain wins de-duplication over an identical LLM proposal', async () => {
+    const reply = JSON.stringify({
+      chains: [{ title: 'model version', steps: [{ findingId: 'a' }, { findingId: 'b' }], rationale: 'model rationale' }],
+    });
+    const r = await proposeChains([fXss, fJwt], { chat: async () => reply, scope: pbScope });
+    expect(r.source).toBe('llm'); // the reply parsed
+    expect(r.chains).toHaveLength(1); // the identical proposal collapsed into one
+    expect([...r.chains[0].findingIds].sort()).toEqual(['a', 'b']);
+    // deterministic-first ordering means the code-authored chain survives, not the model's
+    expect(r.chains[0].title).toBe('DOM-XSS → exposed token → account takeover');
+  });
+});

@@ -35,6 +35,14 @@ secrets.*.js
 # agent runtime data
 agent/data/
 
-# internal planning / design docs — keep local, never push
+# internal planning / design docs — keep local, never push.
+# All design specs live under docs/ (docs/specs/), so ignore the whole tree.
 BUG_BOUNTY_AUTOMATION_PLAN.md
-docs/superpowers/
+docs/
+
+# generated tool output (graphify) — regenerated, not source
+src/graphify-out/
+
+# local Claude Code / superpowers tooling — machine-local, never push
+.superpowers/
+.claude/settings.local.json
