@@ -365,6 +365,37 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // async
   }
 
+  // B3 — observe whether a payload reflects UNESCAPED (the adaptive loop's fitness
+  // signal). Injects the payload as a field value, reads the DOM, then restores the
+  // field. Same gated risk level as the scanner; scope-gated; DOM-only.
+  if (request.action === 'probeReflection') {
+    if (!inScopeHere()) { sendResponse({ success: false, reason: 'out_of_scope' }); return true; }
+    const payload = String(request.payload || '');
+    if (!payload) { sendResponse({ success: false, reason: 'empty' }); return true; }
+    const ids = Array.isArray(request.uniqueIds) && request.uniqueIds.length
+      ? request.uniqueIds
+      : scanner.scannedElements.map((e) => e.uniqueId);
+    let reflected = false;
+    let dangerous = false;
+    for (const id of ids) {
+      const el = scanner.findElementByUniqueId(id);
+      if (!el || el.tagName === 'SELECT' || (el.type && el.type.toLowerCase() === 'file')) continue;
+      const original = el.value;
+      const set = scanner.safeSetValue(el, payload);
+      if (!set.success) continue;
+      try { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+      let html = '';
+      try { html = document.documentElement.outerHTML; } catch (_) {}
+      try { el.value = original; el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+      if (html.indexOf(payload) !== -1) {
+        reflected = true;
+        if (/[<>"'`]/.test(payload)) { dangerous = true; break; } // special chars survived unescaped
+      }
+    }
+    sendResponse({ success: true, reflected, dangerous });
+    return true;
+  }
+
   if (request.action === 'scanPage') {
     const results = scanner.scanPage();
     sendResponse({

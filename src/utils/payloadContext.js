@@ -19,7 +19,7 @@ function str(v, max = 200) {
  * @returns compact context object safe to send to the proxy
  */
 export function buildPayloadContext(vuln, sources) {
-  const { inventory = {}, findings = [], recon = null } =
+  const { inventory = {}, findings = [], recon = null, priorWins = [] } =
     sources && typeof sources === 'object' ? sources : {};
   const vulnLabel =
     typeof vuln === 'string'
@@ -45,5 +45,9 @@ export function buildPayloadContext(vuln, sources) {
     reflectionContext: withCtx ? str(withCtx.reflection, 40) : '',
     sink: withCtx ? str(withCtx.sink, 60) : '',
     params,
+    // Recalled payloads that worked before on this framework/sink/vuln (B4).
+    ...(Array.isArray(priorWins) && priorWins.length
+      ? { priorWins: priorWins.filter((p) => typeof p === 'string').slice(0, 5).map((p) => str(p, 300)) }
+      : {}),
   };
 }

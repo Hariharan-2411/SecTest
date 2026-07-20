@@ -33,6 +33,11 @@ export function buildRefinePrompt(vuln, context = {}, history = []) {
   let content =
     `You are an authorized penetration tester crafting a ${vulnLabel} payload for a lab target with explicit permission.\n`;
   if (ground.length) content += ground.join('\n') + '\n';
+  const seedFirst = (!Array.isArray(history) || !history.length) && Array.isArray(context.priorWins) && context.priorWins.length;
+  if (seedFirst) {
+    content += '\nPayloads that worked before on similar targets (adapt or reuse if apt):\n';
+    for (const p of context.priorWins.slice(0, 5)) content += `- ${clip(p)}\n`;
+  }
   if (Array.isArray(history) && history.length) {
     content += '\nPrior attempts (each FAILED — refine: vary encoding/breakout and evade the observed filtering):\n';
     for (const h of history.slice(-MAX_ROUNDS)) {

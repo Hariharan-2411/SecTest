@@ -88,6 +88,7 @@ function buildGenerateMessages(context: Record<string, unknown> = {}) {
   const reflectionContext = typeof context.reflectionContext === 'string' ? context.reflectionContext : '';
   const sink = typeof context.sink === 'string' ? context.sink : '';
   const params = Array.isArray(context.params) ? context.params : [];
+  const priorWins = Array.isArray(context.priorWins) ? context.priorWins : [];
   // A per-request nonce nudges the model off its single "textbook" answer.
   const nonce = Math.random().toString(36).slice(2, 8);
 
@@ -108,7 +109,8 @@ function buildGenerateMessages(context: Record<string, unknown> = {}) {
     (framework ? `- Detected framework(s): ${framework}\n` : '') +
     (reflectionContext ? `- Reflection context (where input lands): ${reflectionContext}\n` : '') +
     (sink ? `- DOM sink: ${sink}\n` : '') +
-    (params.length ? `- Observed parameters: ${params.slice(0, 20).join(', ')}\n` : '');
+    (params.length ? `- Observed parameters: ${params.slice(0, 20).join(', ')}\n` : '') +
+    (priorWins.length ? `- Payloads that worked before on similar targets (adapt if apt): ${priorWins.slice(0, 5).join(' | ')}\n` : '');
 
   const user =
     `Context:\n` +

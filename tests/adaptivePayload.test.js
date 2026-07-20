@@ -23,6 +23,15 @@ describe('buildRefinePrompt', () => {
     expect(refine[0].content).toMatch(/<script>/);
     expect(refine[0].content).toMatch(/stripped/i);
   });
+
+  it('seeds the first round from prior wins, but not once attempts exist', () => {
+    const seeded = buildRefinePrompt(vuln, { priorWins: ['<svg onload=1>'] }, []);
+    expect(seeded[0].content).toMatch(/worked before/i);
+    expect(seeded[0].content).toMatch(/<svg onload=1>/);
+    // once there's history, the refine section drives instead of the seed
+    const later = buildRefinePrompt(vuln, { priorWins: ['<svg onload=1>'] }, [{ payload: 'x', observation: {} }]);
+    expect(later[0].content).not.toMatch(/worked before/i);
+  });
 });
 
 describe('adaptivePayloadLoop', () => {

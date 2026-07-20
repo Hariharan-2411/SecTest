@@ -23,6 +23,8 @@ import { buildAttackGraph, proposeGraphChains, nodesOfType } from '../../utils/g
 import { buildPayloadContext } from '../../utils/payloadContext';
 import { DEFAULT_AUTONOMY, decideAutonomy } from '../../utils/autonomy';
 import { buildDomProbe } from '../../utils/domProbe';
+import { adaptivePayloadLoop } from '../../utils/adaptivePayload';
+import { recordSuccess, recallPayloads } from '../../utils/payloadMemory';
 import { buildReport, REPORT_PLATFORMS, SEVERITIES } from '../../utils/reportBuilder';
 import {
   createProgram,
@@ -1451,18 +1453,26 @@ const Popup = () => {
     }
   };
 
+  // Build the grounded payload context and seed it with recalled prior-winning
+  // payloads for this framework/sink/vuln (B4 recall). Async on storage read.
+  const buildGroundedContext = (vuln) => new Promise((resolve) => {
+    const base = buildPayloadContext(vuln || selectedVuln, {
+      inventory: inventory[currentHost],
+      findings: findings[currentHost] || [],
+      recon,
+    });
+    chrome.storage.local.get(['payloadMemory'], (r) => {
+      const priorWins = recallPayloads(r.payloadMemory || {}, base);
+      resolve(priorWins.length ? { ...base, priorWins } : base);
+    });
+  });
+
   const fetchLlmSuggestion = async () => {
     const vuln = DEFAULT_VULNS.find(v => v.key === selectedVuln);
     setLlmLoading(true);
     try {
-      const suggestion = await ai.generatePayload(
-        buildPayloadContext(vuln || selectedVuln, {
-          inventory: inventory[currentHost],
-          findings: findings[currentHost] || [],
-          recon,
-        }),
-        routeModel('payload')
-      );
+      const context = await buildGroundedContext(vuln);
+      const suggestion = await ai.generatePayload(context, routeModel('payload'));
       setLlmPayload(suggestion.payload || '');
       setLlmExplanation(suggestion.explanation || '');
       setPayloadSource('llm');
@@ -1475,6 +1485,50 @@ const Popup = () => {
     } finally {
       setLlmLoading(false);
     }
+  };
+
+  // B3 — adaptive payload loop: generate → inject → observe reflection → refine,
+  // up to a few rounds, stopping on the first unescaped-reflection hit. Gated: one
+  // confirm starts it (Dry-Run makes it a no-op); each round reuses the scanner's
+  // gated field-injection. On a hit, the winning payload is remembered (B4).
+  const runAdaptivePayload = () => {
+    const vuln = DEFAULT_VULNS.find((v) => v.key === selectedVuln);
+    confirmAndExecute('Adaptive AI payload loop', { name: vuln?.label || selectedVuln, type: 'adaptive attack' }, () => {
+      setLlmLoading(true);
+      const targetIds = selectedIds && selectedIds.size > 0 ? Array.from(selectedIds) : [];
+      const observe = (payload) =>
+        new Promise((resolve) => {
+          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            const tab = tabs && tabs[0];
+            if (!tab) return resolve({ success: false, evidence: 'no active tab' });
+            chrome.tabs.sendMessage(tab.id, { action: 'probeReflection', payload, uniqueIds: targetIds }, (resp) => {
+              if (chrome.runtime.lastError || !resp) return resolve({ success: false, evidence: 'probe failed' });
+              resolve({
+                success: !!resp.dangerous,
+                evidence: resp.dangerous ? 'reflected unescaped in a dangerous context' : resp.reflected ? 'reflected but escaped' : 'not reflected',
+              });
+            });
+          });
+        });
+      buildGroundedContext(vuln).then((context) =>
+        adaptivePayloadLoop({ vuln, context, chat: ai.chat, observe, model: routeModel('payload') })
+          .then((result) => {
+            setLlmLoading(false);
+            if (result.payload) setLlmPayload(result.payload);
+            setPayloadSource('llm');
+            if (result.success) {
+              setLlmExplanation(`Adaptive: working payload found in ${result.rounds} round(s).`);
+              toast.success(`Adaptive: unescaped reflection in ${result.rounds} round(s)`);
+              chrome.storage.local.get(['payloadMemory'], (r) => {
+                chrome.storage.local.set({ payloadMemory: recordSuccess(r.payloadMemory || {}, context, result.payload) });
+              });
+            } else {
+              toast.info(`Adaptive: no unescaped reflection after ${result.rounds} round(s)`);
+            }
+          })
+          .catch(() => { setLlmLoading(false); toast.error('Adaptive loop failed.'); })
+      );
+    });
   };
 
   // Keep the chat pinned to the newest message as it grows / while thinking.
@@ -2289,6 +2343,9 @@ const Popup = () => {
                   {llmLoading
                     ? <><span className="scan-spin" aria-hidden="true" />Generating…</>
                     : <><IconWand />Generate for {vuln ? vuln.label : 'attack'}</>}
+                </button>
+                <button className="pl-generate" onClick={runAdaptivePayload} disabled={llmLoading} title="Adaptive: generate → inject → observe reflection → refine, up to a few rounds (gated: Dry-Run + confirm; scans the page first)">
+                  <IconWand />Adaptive
                 </button>
                 {llmPayload ? (
                   <div className="pl-ai-out">

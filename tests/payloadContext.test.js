@@ -47,6 +47,13 @@ describe('buildPayloadContext', () => {
     expect(c.params).toEqual([]);
   });
 
+  it('carries recalled prior-winning payloads when provided, and omits them when empty', () => {
+    const c = buildPayloadContext(vuln, { priorWins: ['<img src=x onerror=1>'] });
+    expect(c.priorWins).toEqual(['<img src=x onerror=1>']);
+    expect('priorWins' in buildPayloadContext(vuln, {})).toBe(false);
+    expect('priorWins' in buildPayloadContext(vuln, { priorWins: [] })).toBe(false);
+  });
+
   it('accepts a string vuln and never throws on garbage', () => {
     expect(buildPayloadContext('sqli', {}).vulnerability).toBe('sqli');
     expect(() => buildPayloadContext(null, null)).not.toThrow();
