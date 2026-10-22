@@ -27,8 +27,7 @@ RUN go install github.com/tomnomnom/assetfinder@latest || true; \
     go install github.com/PentestPad/subzy@latest || true; \
     go install github.com/dwisiswant0/crlfuzz/cmd/crlfuzz@latest || true; \
     go install github.com/sensepost/gowitness@latest || true; \
-    go install github.com/trufflesecurity/trufflehog/v3@latest || true; \
-    go install github.com/gitleaks/gitleaks/v8@latest || true
+    go install github.com/zricethezav/gitleaks/v8@latest || true
 
 # ---- stage 2: runtime -------------------------------------------------------
 FROM node:20-bookworm-slim
@@ -48,8 +47,14 @@ ENV PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin PATH=/usr/local/bin:$PATH
 RUN pipx install arjun || true; \
     pipx install s3scanner || true; \
     pipx install wafw00f || true; \
-    pipx install sstimap || true; \
     pipx install commix || true
+# trufflehog: prebuilt binary (its go module needs Go 1.26); non-fatal.
+RUN curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin || true
+# SSTImap: not on PyPI — clone + shim onto PATH (like jwt_tool).
+RUN git clone --depth 1 https://github.com/vladko312/SSTImap /opt/sstimap 2>/dev/null && \
+    pip3 install --break-system-packages -r /opt/sstimap/requirements.txt 2>/dev/null; \
+    printf '#!/bin/sh\nexec python3 /opt/sstimap/sstimap.py "$@"\n' > /usr/local/bin/sstimap && \
+    chmod +x /usr/local/bin/sstimap || true
 # jwt_tool ships as a script (no pip package): clone + shim onto PATH.
 RUN git clone --depth 1 https://github.com/ticarpi/jwt_tool /opt/jwt_tool 2>/dev/null && \
     pip3 install --break-system-packages -r /opt/jwt_tool/requirements.txt 2>/dev/null; \
