@@ -32,10 +32,14 @@ describe('RECON_TOOLS registry', () => {
     }
   });
 
-  it('registers no destructive tools', () => {
+  it('uses only valid risk tiers, and destructive is denied by default policy', () => {
     for (const name of Object.keys(RECON_TOOLS)) {
-      expect(['safe', 'active']).toContain(RECON_TOOLS[name].risk);
+      expect(['safe', 'active', 'destructive']).toContain(RECON_TOOLS[name].risk);
     }
+    // Injection tools (dalfox/sqlmap/sstimap/commix) are destructive and the default
+    // RISK_POLICY denies them — they run only with an explicit opt-in + approval.
+    expect(RECON_TOOLS.sstimap.risk).toBe('destructive');
+    expect(RISK_POLICY.destructive).toBe('deny');
   });
 });
 

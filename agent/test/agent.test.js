@@ -58,10 +58,13 @@ test('a malicious target cannot inject flags/commands into args', () => {
   assert.equal(cmd.args[cmd.args.length - 1], 'example.com'); // path (and payload) stripped
 });
 
-test('listTools exposes risk levels; no destructive tools registered', () => {
+test('listTools exposes valid risk tiers; destructive tools are registered but gated', () => {
   const risks = listTools().map((t) => t.risk);
-  assert.ok(risks.every((r) => r === 'safe' || r === 'active'));
-  assert.ok(!Object.values(TOOLS).some((t) => t.risk === 'destructive'));
+  assert.ok(risks.every((r) => r === 'safe' || r === 'active' || r === 'destructive'));
+  // Injection scanners are now registered as `destructive` (server gates them
+  // behind ALLOW_DESTRUCTIVE, default off; the orchestrator also human-approves).
+  assert.equal(TOOLS.dalfox.risk, 'destructive');
+  assert.equal(TOOLS.sqlmap.risk, 'destructive');
 });
 
 test('parseOutput normalizes each tool shape', () => {
@@ -82,10 +85,11 @@ test('content-discovery tools: safe vs active risk and bounded args', () => {
   // gau / waybackurls query archives, not the target → safe.
   assert.equal(buildCommand('gau', 'https://example.com/x').risk, 'safe');
   assert.deepEqual(buildCommand('waybackurls', 'example.com').args, ['example.com']);
-  // katana / ffuf / feroxbuster hit the live host → active, host-only variable.
+  // katana / ffuf / feroxbuster hit the live host → active. The endpoint now
+  // honors scheme + path (passed as one array arg, so still no shell injection).
   const katana = buildCommand('katana', 'https://example.com/p', 'deep');
   assert.equal(katana.risk, 'active');
-  assert.ok(katana.args.includes('https://example.com'));
+  assert.ok(katana.args.includes('https://example.com/p'));
   assert.ok(katana.args.includes('3')); // deep profile → depth 3
   const ffuf = buildCommand('ffuf', 'example.com');
   assert.equal(ffuf.risk, 'active');

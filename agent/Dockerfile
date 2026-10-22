@@ -17,7 +17,18 @@ RUN mkdir -p /out && \
     go install github.com/projectdiscovery/katana/cmd/katana@latest && \
     go install github.com/ffuf/ffuf/v2@latest && \
     go install github.com/lc/gau/v2/cmd/gau@latest && \
-    go install github.com/tomnomnom/waybackurls@latest
+    go install github.com/tomnomnom/waybackurls@latest && \
+    go install github.com/hahwul/dalfox/v2@latest
+# Phase 1 Go tools (non-fatal individually so one bad module path can't fail the image).
+RUN go install github.com/tomnomnom/assetfinder@latest || true; \
+    go install github.com/projectdiscovery/cvemap/cmd/cvemap@latest || true; \
+    go install github.com/owasp-amass/amass/v4/...@master || true; \
+    go install github.com/d3mondev/puredns/v2@latest || true; \
+    go install github.com/PentestPad/subzy@latest || true; \
+    go install github.com/dwisiswant0/crlfuzz/cmd/crlfuzz@latest || true; \
+    go install github.com/sensepost/gowitness@latest || true; \
+    go install github.com/trufflesecurity/trufflehog/v3@latest || true; \
+    go install github.com/gitleaks/gitleaks/v8@latest || true
 
 # ---- stage 2: runtime -------------------------------------------------------
 FROM node:20-bookworm-slim
@@ -25,10 +36,37 @@ FROM node:20-bookworm-slim
 # nmap + libpcap (naabu) + CA certs (TLS) + curl/tar/unzip. feroxbuster's arm64
 # release asset is a .zip, so unzip is required for the installer to extract it.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends nmap libpcap0.8 ca-certificates curl tar unzip && \
+    apt-get install -y --no-install-recommends \
+      nmap libpcap0.8 ca-certificates curl tar unzip sqlmap \
+      git make gcc python3 python3-venv pipx ruby ruby-dev build-essential chromium && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=tools /out/ /usr/local/bin/
+
+# --- Phase 1: Python tools via pipx (isolated); non-fatal each ---------------
+ENV PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin PATH=/usr/local/bin:$PATH
+RUN pipx install arjun || true; \
+    pipx install s3scanner || true; \
+    pipx install wafw00f || true; \
+    pipx install sstimap || true; \
+    pipx install commix || true
+# jwt_tool ships as a script (no pip package): clone + shim onto PATH.
+RUN git clone --depth 1 https://github.com/ticarpi/jwt_tool /opt/jwt_tool 2>/dev/null && \
+    pip3 install --break-system-packages -r /opt/jwt_tool/requirements.txt 2>/dev/null; \
+    printf '#!/bin/sh\nexec python3 /opt/jwt_tool/jwt_tool.py "$@"\n' > /usr/local/bin/jwt_tool && \
+    chmod +x /usr/local/bin/jwt_tool || true
+
+# --- WordPress scanner (Ruby gem; needs ruby-dev + build tools) --------------
+RUN gem install --no-document wpscan || true
+
+# --- massdns (C; puredns depends on it) + a small trusted resolver list ------
+RUN git clone --depth 1 https://github.com/blechschmidt/massdns /opt/massdns 2>/dev/null && \
+    make -C /opt/massdns 2>/dev/null && cp /opt/massdns/bin/massdns /usr/local/bin/ 2>/dev/null; \
+    printf '1.1.1.1\n8.8.8.8\n9.9.9.9\n8.8.4.4\n1.0.0.1\n' > /resolvers.txt || true
+
+# --- SecLists subset (Discovery/DNS + Web-Content) for ffuf/feroxbuster/puredns
+RUN git clone --depth 1 --filter=blob:none --sparse https://github.com/danielmiessler/SecLists /usr/share/seclists 2>/dev/null && \
+    git -C /usr/share/seclists sparse-checkout set Discovery/DNS Discovery/Web-Content 2>/dev/null || true
 
 # feroxbuster (Rust; not a `go install`) via its multi-arch installer. Non-fatal
 # if the download fails offline — /health will just show it unavailable.

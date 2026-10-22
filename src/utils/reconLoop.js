@@ -21,6 +21,40 @@ import * as ai from './aiProvider';
 
 export const MAX_RECON_DEPTH = 6;
 
+// Decision strictness ranking for the optional critic. The critic may only
+// TIGHTEN (raise the rank), never loosen — so a second model can make a run more
+// conservative but can never bypass scope/policy or the human-approval gate.
+const DECISION_RANK = { allow: 0, needs_approval: 1, deny: 2 };
+export function stricterDecision(original, critic) {
+  const ro = DECISION_RANK[original] ?? 0;
+  const rc = DECISION_RANK[critic];
+  if (rc === undefined) return original; // unknown critic verdict → ignore
+  return rc > ro ? critic : original;
+}
+
+// Apply an optional critic hook to normalized steps. `critique(steps, context)`
+// returns a verdict per step ('allow'|'needs_approval'|'deny' or {decision,reason}).
+// On any failure or shape mismatch, the original steps are kept unchanged — the
+// critic is pure hardening and can never loosen a decision.
+async function applyCritique(steps, context, critique) {
+  if (typeof critique !== 'function' || !steps.length) return steps;
+  let verdicts;
+  try {
+    verdicts = await critique(steps, context);
+  } catch (_) {
+    return steps;
+  }
+  if (!Array.isArray(verdicts) || verdicts.length !== steps.length) return steps;
+  return steps.map((s, i) => {
+    const v = verdicts[i];
+    const cd = typeof v === 'string' ? v : v && v.decision;
+    const merged = stricterDecision(s.decision, cd);
+    if (merged === s.decision) return s;
+    const why = (v && typeof v === 'object' && v.reason) || cd || 'tightened';
+    return { ...s, decision: merged, reason: `critic:${why}` };
+  });
+}
+
 // kind (from the companion agent's parseOutput) -> surface bucket.
 const SURFACE_BUCKET = {
   subdomains: 'subdomains',
@@ -58,6 +92,7 @@ export function buildReconPrompt(context = {}) {
     20
   );
   const s = context.surface || {};
+  const seedUrls = (s.urls || []).slice(0, 15);
   const remaining = Math.max(
     0,
     (context.budget || DEFAULT_RECON_BUDGET) - (context.budgetUsed || 0)
@@ -72,6 +107,7 @@ export function buildReconPrompt(context = {}) {
       ', '
     )}. Profiles: ${RECON_PROFILES.join(', ')}. ` +
     `In-scope targets: ${targets.join(', ') || '(none)'}. ` +
+    `Known endpoints (use these EXACT URLs as the target when scanning, keeping their scheme and port): ${seedUrls.join(', ') || '(none)'}. ` +
     `Already run: ${done.join(', ') || '(none)'}. ` +
     `Discovered so far: ${(s.subdomains || []).length} subdomains, ${
       (s.hosts || []).length
@@ -140,13 +176,20 @@ export async function runReconLoop({
   policy = RISK_POLICY,
   budget = DEFAULT_RECON_BUDGET,
   maxDepth = MAX_RECON_DEPTH,
+  seeds = [],
+  critique,
 } = {}) {
+  const seedUrls = (Array.isArray(seeds) ? seeds : []).filter(
+    (u) => typeof u === 'string' && u.trim()
+  );
   const context = {
     scope,
     budget,
     budgetUsed: 0,
     executed: [],
-    surface: { subdomains: [], urls: [], hosts: [], ports: [] },
+    // Seed known endpoints (with scheme/port) so the planner can target them
+    // directly — in-scope hosts alone can't carry a non-standard port/scheme.
+    surface: { subdomains: [], urls: [...seedUrls], hosts: [], ports: [] },
     findings: [],
   };
   const executedKeys = new Set();
@@ -156,12 +199,14 @@ export async function runReconLoop({
     while (depth < maxDepth && context.budgetUsed < budget) {
       depth++;
       const plan = await planReconStep(context, { chat, model });
-      const { steps } = normalizeReconPlan(plan.steps, {
+      const { steps: proposed } = normalizeReconPlan(plan.steps, {
         scope,
         policy,
         budgetUsed: context.budgetUsed,
         budget,
       });
+      // Optional second model vets each step; it may only tighten, never loosen.
+      const steps = await applyCritique(proposed, context, critique);
       let ranAny = false;
       for (const d of steps) {
         if (context.budgetUsed >= budget) break;

@@ -12,7 +12,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { parseScopeText, evaluateTarget } = require('./lib/scope');
-const { listTools, buildCommand, runCommand, TOOLS } = require('./lib/tools');
+const { listTools, buildCommand, runCommand, targetEndpoint, TOOLS } = require('./lib/tools');
+const { fetchToTempDir } = require('./lib/fetchContent');
 const { parseOutput } = require('./lib/parse');
 const { createWatch, isDue, recordRun, summarizeWatch } = require('./lib/watches');
 const { loadWatches, saveWatches } = require('./lib/store');
@@ -21,6 +22,17 @@ const { OobCatcher } = require('./lib/oob');
 
 const PORT = Number(process.env.AGENT_PORT || 8787);
 const ALLOW_ACTIVE = process.env.AGENT_ALLOW_ACTIVE !== 'false'; // active tools on by default
+const ALLOW_DESTRUCTIVE = process.env.AGENT_ALLOW_DESTRUCTIVE === 'true'; // injection scanners OFF by default (fail closed)
+
+// A tool's risk tier must be enabled for it to run. Fail closed.
+function riskPermitted(risk) {
+  if (risk === 'destructive') return ALLOW_DESTRUCTIVE;
+  if (risk === 'active') return ALLOW_ACTIVE;
+  return true; // safe
+}
+function riskDisabledError(risk) {
+  return risk === 'destructive' ? 'destructive_disabled' : 'active_disabled';
+}
 
 // --- out-of-band interaction catcher (opt-in; confirms blind bugs) -----------
 const OOB_ENABLE = process.env.AGENT_OOB_ENABLE === 'true';
@@ -108,7 +120,8 @@ async function buildSnapshot(watch) {
   for (const tool of watch.tools) {
     const def = TOOLS[tool];
     if (!def) continue;
-    if (def.risk === 'active' && !ALLOW_ACTIVE) continue;
+    if (def.mode === 'content') continue; // content scanners aren't watch tools
+    if (!riskPermitted(def.risk)) continue;
     // Re-check scope for every tool run — never trust stored state blindly.
     if (!evaluateTarget(watch.target, scope).allowed) continue;
     if (!binExists(def.bin)) continue;
@@ -247,6 +260,7 @@ async function handle(req, res) {
       ok: true,
       version: 1,
       allowActive: ALLOW_ACTIVE,
+      allowDestructive: ALLOW_DESTRUCTIVE,
       oob: !!oob,
       tools: listTools().map((t) => ({ ...t, available: binExists(TOOLS[t.name].bin) })),
       scope: { inScope: scope.inScope.length, outOfScope: scope.outOfScope.length },
@@ -290,7 +304,7 @@ async function handle(req, res) {
 
     const def = TOOLS[body.tool];
     if (!def) return send(res, 400, { error: 'unknown_tool' });
-    if (def.risk === 'active' && !ALLOW_ACTIVE) return send(res, 403, { error: 'active_disabled' });
+    if (!riskPermitted(def.risk)) return send(res, 403, { error: riskDisabledError(def.risk) });
 
     // The gate: target must be in scope, checked HERE, server-side.
     const ev = evaluateTarget(body.target, scope);
@@ -298,6 +312,30 @@ async function handle(req, res) {
 
     if (!binExists(def.bin)) return send(res, 501, { error: 'tool_not_installed', tool: body.tool });
     if (!rateOk()) return send(res, 429, { error: 'rate_limited' });
+
+    // Content scanners (trufflehog/gitleaks): fetch the in-scope URL to a bounded
+    // temp dir, scan the dir, then clean up. Not host-target tools.
+    if (def.mode === 'content') {
+      const startedC = Date.now();
+      const fetched = await fetchToTempDir(targetEndpoint(body.target));
+      let result;
+      try {
+        result = await runCommand({ bin: def.bin, args: def.buildContent(fetched.dir) });
+      } finally {
+        fetched.cleanup();
+      }
+      const parsed = parseOutput(body.tool, result.stdout);
+      return send(res, 200, {
+        ok: result.ok,
+        tool: body.tool,
+        risk: def.risk,
+        host: ev.host,
+        durationMs: Date.now() - startedC,
+        timedOut: result.timedOut,
+        exitCode: result.code,
+        ...parsed,
+      });
+    }
 
     let cmd;
     try {
@@ -335,8 +373,9 @@ async function handle(req, res) {
     if (!ev.allowed) return send(res, 403, { error: ev.reason, host: ev.host });
     // Validate requested tools exist + are permitted.
     const tools = (Array.isArray(body.tools) ? body.tools : []).filter((t) => TOOLS[t]);
-    if (tools.some((t) => TOOLS[t].risk === 'active' && !ALLOW_ACTIVE)) {
-      return send(res, 403, { error: 'active_disabled' });
+    const blocked = tools.find((t) => !riskPermitted(TOOLS[t].risk));
+    if (blocked) {
+      return send(res, 403, { error: riskDisabledError(TOOLS[blocked].risk) });
     }
     const watch = createWatch({ target: body.target, tools: tools.length ? tools : undefined, intervalMinutes: body.intervalMinutes });
     if (body.profile) watch.profile = body.profile;
@@ -384,7 +423,7 @@ const server = http.createServer((req, res) => {
 // Bind to localhost only by default — do not expose the agent to the network.
 const HOST = process.env.AGENT_BIND || '127.0.0.1';
 server.listen(PORT, HOST, () => {
-  console.log(`Companion agent listening on http://${HOST}:${PORT}  (active tools: ${ALLOW_ACTIVE ? 'on' : 'off'})`);
+  console.log(`Companion agent listening on http://${HOST}:${PORT}  (active: ${ALLOW_ACTIVE ? 'on' : 'off'}, destructive: ${ALLOW_DESTRUCTIVE ? 'on' : 'off'})`);
   console.log(`  watches loaded: ${watches.length}${WEBHOOK_URL ? ' · webhook: on' : ''}`);
   // OOB catcher: opt-in AND requires active tools to be enabled.
   if (OOB_ENABLE && ALLOW_ACTIVE) {

@@ -31,6 +31,28 @@ export const RECON_TOOLS = {
   katana: { risk: 'active' },
   ffuf: { risk: 'active' },
   feroxbuster: { risk: 'active' },
+  // Injection scanners — fire real payloads. Destructive tier: denied unless the
+  // engagement policy opts in, and then still human-approved per run. Must mirror
+  // agent/lib/tools.js risk tags.
+  dalfox: { risk: 'destructive' },
+  sqlmap: { risk: 'destructive' },
+  // Phase 1 — expanded coverage (tags must match agent/lib/tools.js).
+  assetfinder: { risk: 'safe' },
+  wafw00f: { risk: 'safe' },
+  cvemap: { risk: 'safe' },
+  trufflehog: { risk: 'safe' },
+  gitleaks: { risk: 'safe' },
+  amass: { risk: 'active' },
+  puredns: { risk: 'active' },
+  arjun: { risk: 'active' },
+  subzy: { risk: 'active' },
+  s3scanner: { risk: 'active' },
+  crlfuzz: { risk: 'active' },
+  jwt_tool: { risk: 'active' },
+  wpscan: { risk: 'active' },
+  gowitness: { risk: 'active' },
+  sstimap: { risk: 'destructive' },
+  commix: { risk: 'destructive' },
 };
 
 // Profiles the companion agent understands (PORT_PROFILES / nmap / CRAWL_DEPTH).
