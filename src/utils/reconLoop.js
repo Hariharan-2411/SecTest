@@ -14,6 +14,7 @@ import {
   RISK_POLICY,
   DEFAULT_RECON_BUDGET,
   normalizeReconPlan,
+  normalizeToolCall,
 } from './reconAgent';
 import { executeReconTool } from './reconExecutor';
 import { finalizeTriage } from './reconTriage';
@@ -25,6 +26,8 @@ export const MAX_RECON_DEPTH = 6;
 // host root (a root has nothing to inject). Must match the destructive/active
 // injection tools in agent/lib/tools.js.
 const INJECTION_TOOLS = new Set(['dalfox', 'sqlmap', 'sstimap', 'commix', 'crlfuzz']);
+// Max tool runs in the deterministic post-discovery injection pass.
+const INJECTION_PASS_CAP = 6;
 
 function hostOf(t) {
   try {
@@ -316,6 +319,37 @@ export async function runReconLoop({
   } catch (_) {
     /* never throw — return what we have */
   }
+
+  // Deterministic injection pass. The LLM planner is unreliable at *choosing*
+  // injection tools, so after discovery we run them ourselves against discovered
+  // in-scope parameter endpoints. Still scope- + policy- + approval-gated (a human
+  // approves each active/destructive run); has its own small cap so discovery
+  // budget can't starve it. This is what actually lands confirmed injection bugs.
+  try {
+    const paramUrls = [...new Set((context.surface.urls || []).filter((u) => /\?.+=/.test(u)))].slice(0, 5);
+    let injected = 0;
+    for (const tool of ['dalfox', 'sqlmap']) {
+      if (!RECON_TOOLS[tool]) continue;
+      for (const url of paramUrls) {
+        if (injected >= INJECTION_PASS_CAP) break;
+        const nd = normalizeToolCall({ tool, target: url }, { scope, policy, budgetUsed: 0, budget: Infinity });
+        if (nd.decision === 'deny') { context.executed.push({ decision: 'deny', call: { tool, target: url }, ran: false, reason: nd.reason, pass: 'injection' }); continue; }
+        const key = `${tool}|${url}|${nd.call.profile}`;
+        if (executedKeys.has(key)) continue;
+        let go = nd.decision === 'allow';
+        if (nd.decision === 'needs_approval') go = !!(await approveFn(nd.call));
+        if (!go) { context.executed.push({ decision: nd.decision, call: nd.call, ran: false, reason: 'not_approved', pass: 'injection' }); continue; }
+        executedKeys.add(key);
+        const result = await executeReconTool(nd.call, { agentClient });
+        injected++;
+        mergeResult(context, result);
+        context.executed.push({ decision: nd.decision, call: nd.call, ran: true, ok: result.ok, error: result.error, found: (result.findings || []).length, command: result.command || '', rawExcerpt: result.raw || '', evidence: result.evidence || null, pass: 'injection' });
+      }
+    }
+  } catch (_) {
+    /* injection pass never breaks the run */
+  }
+
   // Finalize through the finding-intelligence layer: validate → enrich → rank.
   const t = finalizeTriage(context.findings);
   return {

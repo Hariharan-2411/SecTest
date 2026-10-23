@@ -19,7 +19,9 @@ test('sqlmap args are DETECTION-ONLY — never exfiltration/exec', () => {
     assert.ok(!joined.includes(banned), `sqlmap must not use ${banned}`);
   }
   assert.ok(joined.includes('--batch'));
-  assert.ok(joined.includes('--technique=BT'));
+  const tech = (joined.match(/--technique=(\w+)/) || [])[1] || '';
+  assert.ok(tech.length > 0, 'a detection technique is set');
+  assert.ok(!tech.includes('S'), 'no stacked-query technique (no multi-statement writes)');
 });
 
 test('buildCommand passes args as an array (no shell string), host-scoped', () => {

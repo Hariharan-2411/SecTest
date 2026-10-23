@@ -171,11 +171,9 @@ const TOOLS = {
     build: (host, url) => [
       '-u', url,
       '--batch',             // non-interactive
-      '--level=1',
+      '--level=2',
       '--risk=1',
-      '--technique=BT',      // boolean + time-based (no stacked/UNION data pulls)
-      '--crawl=1',           // find a few params/forms on the page
-      '--forms',
+      '--technique=BEU',     // boolean + error + UNION detection (no stacked writes)
       '--flush-session',
       '--disable-coloring',
     ],
