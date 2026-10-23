@@ -21,6 +21,45 @@ import * as ai from './aiProvider';
 
 export const MAX_RECON_DEPTH = 6;
 
+// Injection/confirmation tools that must hit a parameter-bearing endpoint, not the
+// host root (a root has nothing to inject). Must match the destructive/active
+// injection tools in agent/lib/tools.js.
+const INJECTION_TOOLS = new Set(['dalfox', 'sqlmap', 'sstimap', 'commix', 'crlfuzz']);
+
+function hostOf(t) {
+  try {
+    return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : 'http://' + t).hostname.toLowerCase();
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
+ * Deterministically choose the best injection target for `host`: the discovered
+ * same-host URL with the MOST query parameters, else `fallback`. Pure. This is
+ * what makes injection tools hit `/search?q=` instead of the useless root.
+ */
+export function pickInjectionTarget(host, surfaceUrls = [], fallback) {
+  const h = String(host || '').toLowerCase();
+  const cands = [];
+  for (const u of Array.isArray(surfaceUrls) ? surfaceUrls : []) {
+    if (typeof u !== 'string') continue;
+    let parsed;
+    try {
+      parsed = new URL(u);
+    } catch (_) {
+      continue;
+    }
+    if (parsed.hostname.toLowerCase() !== h) continue; // same host only (scope-safe)
+    const n = [...parsed.searchParams.keys()].length;
+    if (n === 0) continue; // must carry a parameter to inject
+    cands.push({ u, n });
+  }
+  if (!cands.length) return fallback;
+  cands.sort((a, b) => b.n - a.n);
+  return cands[0].u;
+}
+
 // Decision strictness ranking for the optional critic. The critic may only
 // TIGHTEN (raise the rank), never loosen — so a second model can make a run more
 // conservative but can never bypass scope/policy or the human-approval gate.
@@ -115,8 +154,14 @@ export function buildReconPrompt(context = {}) {
       (context.findings || []).length
     } findings. ` +
     `Budget remaining: ${remaining} tool runs. ` +
+    'STRATEGY: discovery is only the first step — do NOT spend the whole budget enumerating. ' +
+    'As soon as you have endpoints (the Known endpoints above, or once katana/gau/httpx have run), ' +
+    'spend most of the remaining budget TESTING those exact endpoint URLs for vulnerabilities with the ' +
+    'vuln/injection tools: nuclei, dalfox (XSS), sqlmap (SQLi), crlfuzz (CRLF), sstimap (SSTI), ' +
+    'commix (command injection), jwt_tool, subzy (takeover), s3scanner, wpscan. Target the discovered ' +
+    'endpoint URLs, not just the root. ' +
     'Propose the next 1-3 recon steps as JSON only: {"steps":[{"tool","target","profile"}],"done":false}. ' +
-    'Reference only in-scope targets and allowed tools. Set done:true when further recon is not worthwhile. JSON only:';
+    'Reference only in-scope targets and allowed tools. Set done:true only when both discovery AND vuln testing of the endpoints are done. JSON only:';
   return { messages: [{ role: 'user', content }] };
 }
 
@@ -240,6 +285,15 @@ export async function runReconLoop({
           continue;
         }
         executedKeys.add(key);
+        // Deterministic param-targeting: point an injection tool at a discovered
+        // param endpoint instead of the bare root, when the target carries no query.
+        if (INJECTION_TOOLS.has(d.call.tool) && !/\?.+=/.test(d.call.target || '')) {
+          d.call.target = pickInjectionTarget(
+            hostOf(d.call.target),
+            context.surface.urls,
+            d.call.target
+          );
+        }
         const result = await executeReconTool(d.call, { agentClient });
         context.budgetUsed++;
         ranAny = true;
