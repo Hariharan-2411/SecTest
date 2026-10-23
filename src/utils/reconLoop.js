@@ -305,6 +305,8 @@ export async function runReconLoop({
           ok: result.ok,
           error: result.error,
           found: (result.findings || []).length,
+          command: result.command || '',       // PoC evidence (Light)
+          rawExcerpt: result.raw || '',
         });
       }
       if (plan.done) break;

@@ -92,6 +92,8 @@ export async function executeReconTool(call = {}, { agentClient } = {}) {
     items,
     count: typeof body.count === 'number' ? body.count : items.length,
     findings: toFindings(body),
+    command: body.command || '', // for PoC evidence (Light mode)
+    raw: String(body.raw || '').slice(0, 4000),
   };
 }
 
