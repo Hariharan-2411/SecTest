@@ -55,6 +55,13 @@ RUN git clone --depth 1 https://github.com/vladko312/SSTImap /opt/sstimap 2>/dev
     pip3 install --break-system-packages -r /opt/sstimap/requirements.txt 2>/dev/null; \
     printf '#!/bin/sh\nexec python3 /opt/sstimap/sstimap.py "$@"\n' > /usr/local/bin/sstimap && \
     chmod +x /usr/local/bin/sstimap || true
+
+# --- Full-evidence proxy: mitmproxy + trusted CA (non-fatal) -----------------
+RUN pipx install mitmproxy || true; \
+    (timeout 6 mitmdump --listen-port 18080 >/dev/null 2>&1 || true); \
+    if [ -f /root/.mitmproxy/mitmproxy-ca-cert.pem ]; then \
+      cp /root/.mitmproxy/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/mitmproxy.crt && update-ca-certificates || true; \
+    fi
 # jwt_tool ships as a script (no pip package): clone + shim onto PATH.
 RUN git clone --depth 1 https://github.com/ticarpi/jwt_tool /opt/jwt_tool 2>/dev/null && \
     pip3 install --break-system-packages -r /opt/jwt_tool/requirements.txt 2>/dev/null; \
@@ -90,7 +97,10 @@ COPY . .
 
 # In-container the process must bind 0.0.0.0 to be reachable via the published
 # port; the compose file restricts host exposure to 127.0.0.1.
-ENV AGENT_BIND=0.0.0.0 AGENT_PORT=8787
+ENV AGENT_BIND=0.0.0.0 AGENT_PORT=8787 \
+    AGENT_MITM_ADDON=/app/mitm/capture.py \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 EXPOSE 8787
 
 CMD ["node", "server.js"]

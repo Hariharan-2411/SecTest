@@ -307,6 +307,7 @@ export async function runReconLoop({
           found: (result.findings || []).length,
           command: result.command || '',       // PoC evidence (Light)
           rawExcerpt: result.raw || '',
+          evidence: result.evidence || null,    // PoC evidence (Full: req/resp flows)
         });
       }
       if (plan.done) break;

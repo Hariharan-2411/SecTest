@@ -335,14 +335,17 @@ function buildCommand(tool, target, profile = 'quick') {
  * stdin gives them an immediate EOF so they proceed with the flag args.
  * Bounded by timeout + maxBuffer so a runaway tool can't hang or OOM the agent.
  */
-function runCommand({ bin, args }, { timeoutMs = 120000, maxBuffer = 8 * 1024 * 1024 } = {}) {
+function runCommand({ bin, args }, { timeoutMs = 120000, maxBuffer = 8 * 1024 * 1024, env } = {}) {
   return new Promise((resolve) => {
     let out = '';
     let err = '';
     let killed = false;
     let child;
     try {
-      child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(bin, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: env ? { ...process.env, ...env } : process.env,
+      });
     } catch (e) {
       return resolve({ ok: false, code: 1, timedOut: false, stdout: '', stderr: String(e && e.message) });
     }

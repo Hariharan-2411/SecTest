@@ -14,6 +14,7 @@ const path = require('path');
 const { parseScopeText, evaluateTarget } = require('./lib/scope');
 const { listTools, buildCommand, runCommand, targetEndpoint, TOOLS } = require('./lib/tools');
 const { fetchToTempDir } = require('./lib/fetchContent');
+const { runWithFullEvidence } = require('./lib/fullEvidence');
 const { parseOutput } = require('./lib/parse');
 const { createWatch, isDue, recordRun, summarizeWatch } = require('./lib/watches');
 const { loadWatches, saveWatches } = require('./lib/store');
@@ -345,7 +346,16 @@ async function handle(req, res) {
     }
 
     const started = Date.now();
-    const result = await runCommand(cmd, def.timeoutMs ? { timeoutMs: def.timeoutMs } : undefined);
+    let result;
+    let evidence;
+    if (body.evidence === 'full') {
+      // Full PoC evidence: run through mitmdump, capture req/resp; falls back to Light.
+      const fe = await runWithFullEvidence({ def, cmd, runCommand, binExists });
+      result = fe.result;
+      evidence = fe.evidence;
+    } else {
+      result = await runCommand(cmd, def.timeoutMs ? { timeoutMs: def.timeoutMs } : undefined);
+    }
     const parsed = parseOutput(body.tool, result.stdout);
     return send(res, 200, {
       ok: result.ok,
@@ -356,6 +366,7 @@ async function handle(req, res) {
       durationMs: Date.now() - started,
       timedOut: result.timedOut,
       exitCode: result.code,
+      evidence,
       ...parsed,
     });
   }
