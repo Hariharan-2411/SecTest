@@ -26,6 +26,9 @@ const WORDLIST = process.env.AGENT_WORDLIST || '/usr/share/wordlists/dirb/common
 // Phase 1: DNS brute wordlist + resolver list for puredns (bundled in the image).
 const DNS_WORDLIST = process.env.AGENT_DNS_WORDLIST || '/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt';
 const RESOLVERS = process.env.AGENT_RESOLVERS || '/resolvers.txt';
+// Confirmation tools (sqlmap/sstimap/commix) need minutes to CONFIRM, not 120s —
+// bounded by this hard cap so a run can never hang.
+const CONFIRM_TIMEOUT = Number(process.env.AGENT_CONFIRM_TIMEOUT_MS || 420000);
 
 // Content-discovery crawl depth by profile (katana/feroxbuster stay shallow).
 const CRAWL_DEPTH = { quick: '2', top1000: '2', deep: '3' };
@@ -164,6 +167,7 @@ const TOOLS = {
     // exfiltrating data (non-destructive PoC per the plan's guardrails §8).
     risk: 'destructive',
     bin: 'sqlmap',
+    timeoutMs: CONFIRM_TIMEOUT,
     build: (host, url) => [
       '-u', url,
       '--batch',             // non-interactive
@@ -267,6 +271,7 @@ const TOOLS = {
     // SSTI detection. No --os-shell / eval-exec; just confirm injectability.
     risk: 'destructive',
     bin: 'sstimap',
+    timeoutMs: CONFIRM_TIMEOUT,
     build: (host, url) => ['-u', url, '--batch'],
   },
   commix: {
@@ -274,6 +279,7 @@ const TOOLS = {
     // --os-cmd/--os-pwn/--file-write/--file-read.
     risk: 'destructive',
     bin: 'commix',
+    timeoutMs: CONFIRM_TIMEOUT,
     build: (host, url) => ['-u', url, '--batch', '--level=1'],
   },
 };

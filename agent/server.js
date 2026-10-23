@@ -345,7 +345,7 @@ async function handle(req, res) {
     }
 
     const started = Date.now();
-    const result = await runCommand(cmd);
+    const result = await runCommand(cmd, def.timeoutMs ? { timeoutMs: def.timeoutMs } : undefined);
     const parsed = parseOutput(body.tool, result.stdout);
     return send(res, 200, {
       ok: result.ok,
