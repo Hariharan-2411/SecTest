@@ -4,7 +4,7 @@ import {
   buildReconFileUrls,
   normalizeEndpoint,
 } from '../../utils/reconHelpers';
-import { evaluateScope, scopeFromAllowlist } from '../../utils/scope';
+import { evaluateScope, scopeFromAllowlist, toMatchPatterns } from '../../utils/scope';
 import { mergeObservation, extractParamsFromUrls } from '../../utils/inventory';
 import {
   isApiEvent,
@@ -100,7 +100,7 @@ function getSettings() {
         // Prefer the structured scope; migrate from the legacy allowlist if absent.
         const scope = r.scope && Array.isArray(r.scope.inScope)
           ? r.scope
-          : scopeFromAllowlist(r.allowlist || ['*']);
+          : scopeFromAllowlist(r.allowlist || []);
         resolve({
           scope,
           passiveCapture: r.passiveCapture !== false, // default true
@@ -113,6 +113,41 @@ function getSettings() {
     );
   });
 }
+
+// Hot-path settings for the webRequest observers.
+//
+// These listeners fire once per response/request across every in-scope tab, and
+// the full `getSettings()` does a 7-key `chrome.storage.local.get` each time —
+// hundreds of storage round-trips per page load on a chatty SPA, which also kept
+// the service worker from ever suspending. Cache just the two fields the
+// observers need and drop the cache whenever local storage changes.
+//
+// Deliberately NOT used by `getSettings()` callers that read-modify-write
+// `auditLog`: they must see the committed value, not a cached one.
+let hotSettingsCache = null;
+
+function getHotSettings() {
+  if (hotSettingsCache) return Promise.resolve(hotSettingsCache);
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['allowlist', 'scope', 'passiveCapture'], (r) => {
+      hotSettingsCache = {
+        scope:
+          r.scope && Array.isArray(r.scope.inScope)
+            ? r.scope
+            : scopeFromAllowlist(r.allowlist || []),
+        passiveCapture: r.passiveCapture !== false, // default true
+      };
+      resolve(hotSettingsCache);
+    });
+  });
+}
+
+try {
+  chrome.storage.onChanged.addListener((changes, ns) => {
+    if (ns !== 'local') return;
+    if (changes.scope || changes.allowlist || changes.passiveCapture) hotSettingsCache = null;
+  });
+} catch (_) {}
 
 // Merge a passive page observation into the per-host inventory (scope-gated).
 async function recordObservation(pageUrl, observation) {
@@ -206,7 +241,7 @@ async function persistFindingsGrouped(list) {
 
 async function handleHeadersReceived(details) {
   try {
-    const { scope, passiveCapture } = await getSettings();
+    const { scope, passiveCapture } = await getHotSettings();
     if (!passiveCapture) return;
     const ev = evaluateScope(details.url, scope);
     if (!ev.allowed) return;
@@ -248,7 +283,7 @@ async function recordApiRequest(details) {
       requestHeaders: details.requestHeaders || [],
     };
     if (!isApiEvent(event)) return;
-    const { scope, passiveCapture } = await getSettings();
+    const { scope, passiveCapture } = await getHotSettings();
     if (!passiveCapture) return;
     const ev = evaluateScope(details.url, scope);
     if (!ev.allowed) return;
@@ -495,7 +530,10 @@ async function runApiInjection(pageUrl) {
     if (!(await rateLimiter.canPerformAction())) break;
     const anon = await fetchStatusLen(t.example, 'omit');
     const res = classifyAuthReplay({ authed, anon });
-    if (res.candidate) auth.push({ method: t.method, path: t.path, example: t.example, reason: res.reason });
+    // Carry the metadata-only response pair so the popup can run the F1 AI
+    // access-control analysis (LLM calls live in the popup, not here). Status +
+    // length only — never bodies.
+    if (res.candidate) auth.push({ method: t.method, path: t.path, example: t.example, reason: res.reason, pair: { authed, anon } });
   }
 
   const findings = buildInjectionFindings({ host, injections, auth, idor });
@@ -537,7 +575,7 @@ function wsToHttp(u) {
 
 async function recordWsHandshake(details) {
   try {
-    const { scope, passiveCapture } = await getSettings();
+    const { scope, passiveCapture } = await getHotSettings();
     if (!passiveCapture) return;
     const ev = evaluateScope(wsToHttp(details.url), scope);
     if (!ev.allowed) return;
@@ -852,6 +890,24 @@ async function appendJsWatch(host, diffs) {
   log.unshift({ ts: new Date().toISOString(), diffs });
   watch[host] = log.slice(0, 100); // cap history per host
   await storageSet({ jsWatch: watch });
+}
+
+// G2 — send a recon digest (text) to the configured notify webhook. Reuses the
+// same webhook path as JS-change alerts. No-op when no webhook is configured.
+async function sendDigest({ title, body } = {}) {
+  const { notifyConfig } = await getSettings();
+  if (!notifyConfig || !notifyConfig.webhookUrl) return { success: false, reason: 'no_webhook' };
+  try {
+    const { body: payload } = buildWebhookPayload(notifyConfig.webhookPlatform, title || 'Recon digest', body || '');
+    await fetch(notifyConfig.webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return { success: true };
+  } catch (e) {
+    return { success: false, reason: String(e && e.message) };
+  }
 }
 
 async function fireNotification(host, diffs, notifyConfig) {
@@ -1297,6 +1353,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // async
   }
 
+  if (request.action === 'sendDigest') {
+    sendDigest({ title: request.title, body: request.body })
+      .then(sendResponse)
+      .catch((e) => sendResponse({ success: false, reason: String(e && e.message) }));
+    return true; // async
+  }
+
   if (request.action === 'agentScan') {
     agentScan({ tool: request.tool, target: request.target, profile: request.profile })
       .then(sendResponse)
@@ -1322,64 +1385,159 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-// Passive security-header analysis: observe response headers on in-scope hosts.
-// Non-blocking listener; 'extraHeaders' is required to read Set-Cookie and some
-// security headers in MV3. Wrapped in try/catch so a missing permission or an
-// unsupported extraInfoSpec never breaks worker startup.
-try {
-  chrome.webRequest.onHeadersReceived.addListener(
-    (details) => { handleHeadersReceived(details); },
-    { urls: ['http://*/*', 'https://*/*'], types: ['main_frame', 'sub_frame', 'xmlhttprequest'] },
-    ['responseHeaders', 'extraHeaders']
-  );
-} catch (_) {
+// --- Scope-driven attachment ----------------------------------------------
+//
+// Nothing here is declared statically any more. Content scripts are registered
+// at runtime and the webRequest observers are attached at runtime, both filtered
+// to the operator's in-scope hosts. With no scope configured the extension
+// attaches to NOTHING: no script in any tab, no listener on any request.
+//
+// Why this matters beyond hygiene: `extraHeaders` on an `<all_urls>` filter opts
+// the whole browser out of Chrome's fast response-header path, and a content
+// script on `<all_urls>` costs two JS contexts plus a full DOM+regex recon pass
+// in every tab you open. Both were previously paid on every site, all the time.
+
+const SCRIPT_IDS = ['iris-content', 'iris-wshook'];
+
+const onHeadersReceivedHandler = (details) => { handleHeadersReceived(details); };
+const onSendHeadersHandler = (details) => { recordApiRequest(details); };
+const onBeforeSendHeadersHandler = (details) => { recordWsHandshake(details); };
+
+let trafficAttached = false;
+
+// Attach with `extraHeaders` (needed for Set-Cookie / Origin / Cookie in MV3),
+// falling back to the plain spec if the platform rejects it.
+function addWebRequestListener(event, handler, filter, spec) {
   try {
-    // Fallback without extraHeaders if the platform rejects it.
-    chrome.webRequest.onHeadersReceived.addListener(
-      (details) => { handleHeadersReceived(details); },
-      { urls: ['http://*/*', 'https://*/*'], types: ['main_frame', 'sub_frame', 'xmlhttprequest'] },
-      ['responseHeaders']
-    );
-  } catch (_) {}
+    event.addListener(handler, filter, [...spec, 'extraHeaders']);
+  } catch (_) {
+    try {
+      event.addListener(handler, filter, spec);
+    } catch (_) {}
+  }
 }
 
-// Passive API surface discovery: observe request line + headers of XHR/fetch on
-// in-scope hosts. requestHeaders (+extraHeaders) let us note whether the call
-// carried auth; observe-only, never blocking.
-try {
-  chrome.webRequest.onSendHeaders.addListener(
-    (details) => { recordApiRequest(details); },
-    { urls: ['http://*/*', 'https://*/*'], types: ['xmlhttprequest'] },
-    ['requestHeaders', 'extraHeaders']
-  );
-} catch (_) {
-  try {
-    chrome.webRequest.onSendHeaders.addListener(
-      (details) => { recordApiRequest(details); },
-      { urls: ['http://*/*', 'https://*/*'], types: ['xmlhttprequest'] },
-      ['requestHeaders']
-    );
-  } catch (_) {}
+function detachTrafficObservers() {
+  if (!trafficAttached) return;
+  try { chrome.webRequest.onHeadersReceived.removeListener(onHeadersReceivedHandler); } catch (_) {}
+  try { chrome.webRequest.onSendHeaders.removeListener(onSendHeadersHandler); } catch (_) {}
+  try { chrome.webRequest.onBeforeSendHeaders.removeListener(onBeforeSendHeadersHandler); } catch (_) {}
+  trafficAttached = false;
 }
 
-// Passive WebSocket handshake observation: read the Upgrade request's Origin +
-// Cookie on in-scope hosts to flag CSWSH candidates. Observe-only; extraHeaders
-// is required to read Cookie/Origin in MV3.
-try {
-  chrome.webRequest.onBeforeSendHeaders.addListener(
-    (details) => { recordWsHandshake(details); },
-    { urls: ['ws://*/*', 'wss://*/*', 'http://*/*', 'https://*/*'], types: ['websocket'] },
-    ['requestHeaders', 'extraHeaders']
+function attachTrafficObservers(matches) {
+  detachTrafficObservers(); // filters are fixed at add time, so re-add on change
+  if (!matches.length) return;
+
+  // Passive security-header analysis on in-scope responses.
+  addWebRequestListener(
+    chrome.webRequest.onHeadersReceived,
+    onHeadersReceivedHandler,
+    { urls: matches, types: ['main_frame', 'sub_frame', 'xmlhttprequest'] },
+    ['responseHeaders']
   );
-} catch (_) {
-  try {
-    chrome.webRequest.onBeforeSendHeaders.addListener(
-      (details) => { recordWsHandshake(details); },
-      { urls: ['ws://*/*', 'wss://*/*', 'http://*/*', 'https://*/*'], types: ['websocket'] },
-      ['requestHeaders']
-    );
-  } catch (_) {}
+  // Passive API-surface discovery from XHR/fetch the user already generated.
+  addWebRequestListener(
+    chrome.webRequest.onSendHeaders,
+    onSendHeadersHandler,
+    { urls: matches, types: ['xmlhttprequest'] },
+    ['requestHeaders']
+  );
+  // WebSocket handshakes (CSWSH candidates). ws:// and wss:// carry the same
+  // host, so reuse the in-scope hosts with the websocket schemes.
+  const wsMatches = matches.flatMap((m) => {
+    const tail = m.replace(/^[a-z*]+:\/\//i, '');
+    return [`ws://${tail}`, `wss://${tail}`];
+  });
+  addWebRequestListener(
+    chrome.webRequest.onBeforeSendHeaders,
+    onBeforeSendHeadersHandler,
+    { urls: [...matches, ...wsMatches], types: ['websocket'] },
+    ['requestHeaders']
+  );
+
+  trafficAttached = true;
 }
+
+async function unregisterOurContentScripts() {
+  try {
+    const existing = await chrome.scripting.getRegisteredContentScripts({ ids: SCRIPT_IDS });
+    if (existing && existing.length) {
+      await chrome.scripting.unregisterContentScripts({ ids: existing.map((s) => s.id) });
+    }
+  } catch (_) {
+    // Nothing registered (or ids unknown to Chrome) — nothing to undo.
+  }
+}
+
+// One-time migration: older builds SEEDED `{inScope: ['*']}` as the default, so
+// existing profiles carry a browser-wide scope the operator never actually
+// chose. Clear that once, so those installs get the inert default too. A scope
+// the operator deliberately sets to '*' afterwards is left alone.
+function migrateLegacyWildcardScope() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['scope', 'allowlist', 'scopeWildcardCleared'], (r) => {
+      if (r.scopeWildcardCleared) return resolve();
+      const patch = { scopeWildcardCleared: true };
+      const isWildcardOnly = (list) =>
+        Array.isArray(list) && list.length === 1 && list[0] === '*';
+      if (r.scope && isWildcardOnly(r.scope.inScope)) {
+        patch.scope = { inScope: [], outOfScope: r.scope.outOfScope || [] };
+      }
+      if (isWildcardOnly(r.allowlist)) patch.allowlist = [];
+      chrome.storage.local.set(patch, () => {
+        hotSettingsCache = null;
+        resolve();
+      });
+    });
+  });
+}
+
+// Single source of truth: re-derive what we attach to from the stored scope.
+async function syncScopeAttachment() {
+  await migrateLegacyWildcardScope();
+  const { scope } = await getHotSettings();
+  const matches = toMatchPatterns(scope);
+
+  await unregisterOurContentScripts();
+
+  if (!matches.length) {
+    detachTrafficObservers();
+    console.log('Iris: no scope configured — not attached to any tab or request.');
+    return;
+  }
+
+  try {
+    await chrome.scripting.registerContentScripts([
+      {
+        id: 'iris-content',
+        matches,
+        js: ['contentScript.bundle.js'],
+        css: ['content.styles.css'],
+        runAt: 'document_idle',
+      },
+      {
+        id: 'iris-wshook',
+        matches,
+        js: ['wsHook.bundle.js'],
+        runAt: 'document_start',
+        world: 'MAIN',
+      },
+    ]);
+  } catch (e) {
+    console.warn('Iris: content script registration failed', e && e.message);
+  }
+
+  attachTrafficObservers(matches);
+  console.log('Iris: attached to', matches.join(', '));
+}
+
+syncScopeAttachment();
+try {
+  chrome.storage.onChanged.addListener((changes, ns) => {
+    if (ns === 'local' && (changes.scope || changes.allowlist)) syncScopeAttachment();
+  });
+} catch (_) {}
 
 // Monitoring alarm: re-scan tracked hosts on a schedule.
 try {
@@ -1395,8 +1553,11 @@ chrome.storage.onChanged.addListener((changes, ns) => {
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(['allowlist', 'scope', 'dryRunMode', 'auditLog', 'notifyConfig', 'jsMonitor', 'agentConfig'], (result) => {
     const patch = {};
-    if (!result.allowlist) patch.allowlist = ['*'];
-    if (!result.scope) patch.scope = { inScope: ['*'], outOfScope: [] };
+    // Seed an EMPTY scope: the extension stays inert until the operator names a
+    // target. Seeding '*' here is what previously put a content script and a
+    // webRequest observer on every tab in the browser.
+    if (!result.allowlist) patch.allowlist = [];
+    if (!result.scope) patch.scope = { inScope: [], outOfScope: [] };
     if (result.dryRunMode === undefined) patch.dryRunMode = true;
     if (!result.auditLog) patch.auditLog = [];
     if (!result.notifyConfig) patch.notifyConfig = { enabled: true, webhookUrl: '', webhookPlatform: 'discord' };

@@ -13,7 +13,7 @@ import { classifyProbeResult } from '../../utils/domProbe';
 // injection, file attach) are real side effects, so they must be gated on scope
 // HERE — not only by the popup UI. We cache the scope from storage and refresh
 // it on change so the check at message time is synchronous.
-let currentScope = { inScope: ['*'], outOfScope: [] };
+let currentScope = { inScope: [], outOfScope: [] };
 try {
   chrome.storage.local.get(['scope'], (r) => {
     if (r && r.scope && Array.isArray(r.scope.inScope)) currentScope = r.scope;

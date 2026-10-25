@@ -6,6 +6,7 @@ import {
   evaluateScope,
   isInScope,
   scopeFromAllowlist,
+  toMatchPatterns,
 } from '../src/utils/scope';
 
 describe('normalizePattern', () => {
@@ -101,7 +102,38 @@ describe('scopeFromAllowlist', () => {
       outOfScope: [],
     });
   });
-  it('defaults to * when empty', () => {
-    expect(scopeFromAllowlist([])).toEqual({ inScope: ['*'], outOfScope: [] });
+  it('fails closed on an empty/absent allowlist', () => {
+    // Must NOT default to '*': an empty scope is what keeps the extension from
+    // registering content scripts and webRequest observers on every host.
+    expect(scopeFromAllowlist([])).toEqual({ inScope: [], outOfScope: [] });
+    expect(scopeFromAllowlist(undefined)).toEqual({ inScope: [], outOfScope: [] });
+    expect(isInScope('https://example.com/', scopeFromAllowlist([]))).toBe(false);
+  });
+});
+
+describe('toMatchPatterns', () => {
+  it('returns [] for an empty scope so nothing is registered', () => {
+    expect(toMatchPatterns({ inScope: [], outOfScope: [] })).toEqual([]);
+    expect(toMatchPatterns(undefined)).toEqual([]);
+    expect(toMatchPatterns({ inScope: ['', '  ', '# comment'] })).toEqual([]);
+  });
+
+  it('expands an explicit * to the http/https schemes', () => {
+    expect(toMatchPatterns({ inScope: ['*'] })).toEqual(['http://*/*', 'https://*/*']);
+  });
+
+  it('maps host patterns to match patterns', () => {
+    expect(toMatchPatterns({ inScope: ['*.example.com'] })).toEqual(['*://*.example.com/*']);
+    expect(toMatchPatterns({ inScope: ['example.com'] })).toEqual(['*://example.com/*']);
+    // Normalization applies: scheme/path/port are stripped first.
+    expect(toMatchPatterns({ inScope: ['https://app.example.com:8443/login'] })).toEqual([
+      '*://app.example.com/*',
+    ]);
+  });
+
+  it('de-duplicates', () => {
+    expect(toMatchPatterns({ inScope: ['example.com', 'EXAMPLE.com', 'example.com/x'] })).toEqual([
+      '*://example.com/*',
+    ]);
   });
 });

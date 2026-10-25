@@ -25,6 +25,11 @@ import { DEFAULT_AUTONOMY, decideAutonomy } from '../../utils/autonomy';
 import { buildDomProbe } from '../../utils/domProbe';
 import { adaptivePayloadLoop } from '../../utils/adaptivePayload';
 import { recordSuccess, recallPayloads } from '../../utils/payloadMemory';
+import { escalationBudgetFor } from '../../utils/escalationBudget';
+import { analyzeAccessControl } from '../../utils/responseDiff';
+import { draftChainNarrative } from '../../utils/chainNarrative';
+import { buildReconDigest, formatReconDigest } from '../../utils/reconDigest';
+import { buildPocScaffold, formatPocSteps } from '../../utils/pocScaffold';
 import { buildReport, REPORT_PLATFORMS, SEVERITIES } from '../../utils/reportBuilder';
 import {
   createProgram,
@@ -279,8 +284,8 @@ const Popup = () => {
   const [loading, setLoading] = useState(false);
   const [currentUrl, setCurrentUrl] = useState('');
   const [allowlist, setAllowlist] = useState([]);
-  const [scope, setScope] = useState({ inScope: ['*'], outOfScope: [] });
-  const [scopeInText, setScopeInText] = useState('*');
+  const [scope, setScope] = useState({ inScope: [], outOfScope: [] });
+  const [scopeInText, setScopeInText] = useState('');
   const [scopeOutText, setScopeOutText] = useState('');
   const [passiveCapture, setPassiveCapture] = useState(true);
   const [inventory, setInventory] = useState({}); // { [host]: inv }
@@ -289,6 +294,9 @@ const Popup = () => {
   const [graphqlSurface, setGraphqlSurface] = useState({}); // { [host]: {endpoint,introspection,surface,suggestions,batching} }
   const [gqlBusy, setGqlBusy] = useState(false); // graphql probe in flight
   const [apiTests, setApiTests] = useState({}); // { [host]: {injections,auth,idor,testedAt} }
+  const [acAnalysis, setAcAnalysis] = useState({}); // { [key]: {kind,confidence,rationale,loading} } — F2 AI access-control drafts
+  const [digestSeen, setDigestSeen] = useState([]); // finding ids seen at last recon digest (G2)
+  const [reconDigestResult, setReconDigestResult] = useState(null);
   const [injBusy, setInjBusy] = useState(false); // injection tests in flight
   const [wsEndpoints, setWsEndpoints] = useState({}); // { [host]: [{url,cswsh,hasCookie,...}] }
   const [wsFrames, setWsFrames] = useState({}); // { [host]: [{event,url,data,ts}] }
@@ -309,6 +317,7 @@ const Popup = () => {
   const [escalationBusy, setEscalationBusy] = useState(false);
   const [chains, setChains] = useState(null); // { chains, rejected, source } — AI-proposed exploit chains
   const [chainsBusy, setChainsBusy] = useState(false);
+  const [chainNarratives, setChainNarratives] = useState({}); // { [chainId]: {loading?, summary, impact, remediation, cvss} } — J1 drafts
   const [escBudgetUsed, setEscBudgetUsed] = useState(0); // escalation steps executed this session (loop cap)
   // Phase 2: monitoring / tracker state
   const [jsScanResult, setJsScanResult] = useState(null);
@@ -377,7 +386,7 @@ const Popup = () => {
     // Load settings from storage
     chrome.storage.local.get(
       ['allowlist', 'scope', 'passiveCapture', 'inventory', 'apiInventory', 'graphqlSurface', 'apiTests', 'wsEndpoints', 'wsFrames', 'headerFindings', 'findings', 'dryRunMode', 'auditLog', 'aiModel', 'checklistStore',
-       'jsWatch', 'programs', 'submissions', 'notifyConfig', 'jsMonitor', 'agentConfig', 'autoRouteModels', 'autonomyLevel'],
+       'jsWatch', 'programs', 'submissions', 'notifyConfig', 'jsMonitor', 'agentConfig', 'autoRouteModels', 'autonomyLevel', 'digestSeen'],
       (result) => {
         setJsWatch(result.jsWatch || {});
         setHeaderFindings(result.headerFindings || {});
@@ -392,12 +401,12 @@ const Popup = () => {
         if (result.notifyConfig) setNotifyConfig(result.notifyConfig);
         if (result.jsMonitor) setJsMonitor(result.jsMonitor);
         if (result.agentConfig) setAgentConfig(result.agentConfig);
-        setAllowlist(result.allowlist || ['*']);
+        setAllowlist(result.allowlist || []);
         // Prefer structured scope; migrate from the legacy allowlist on first run.
         const nextScope =
           result.scope && Array.isArray(result.scope.inScope)
             ? result.scope
-            : scopeFromAllowlist(result.allowlist || ['*']);
+            : scopeFromAllowlist(result.allowlist || []);
         setScope(nextScope);
         setScopeInText((nextScope.inScope || []).join('\n'));
         setScopeOutText((nextScope.outOfScope || []).join('\n'));
@@ -410,6 +419,7 @@ const Popup = () => {
         if (result.aiModel) setAiModel(result.aiModel);
         if (result.autoRouteModels !== undefined) setAutoRouteModels(result.autoRouteModels);
         if (result.autonomyLevel) setAutonomyLevel(result.autonomyLevel);
+        if (Array.isArray(result.digestSeen)) setDigestSeen(result.digestSeen);
       }
     );
 
@@ -434,6 +444,20 @@ const Popup = () => {
         setAiModels(decorate(ids));
         setAiReachable(true);
         setAiError('');
+        // Reconcile the selected model against what Groq actually serves for
+        // this key. A stored/default id that has been retired, renamed, or is
+        // not accessible would otherwise be sent verbatim and 404 on generate,
+        // so fall back to the first live id when the current pick is gone.
+        if (Array.isArray(ids) && ids.length) {
+          setAiModel((prev) => {
+            if (ids.includes(prev)) return prev;
+            const next = ids[0];
+            try {
+              chrome.storage.local.set({ aiModel: next });
+            } catch (_) {}
+            return next;
+          });
+        }
       } catch (e) {
         if (cancelled) return;
         setAiReachable(false);
@@ -723,6 +747,7 @@ const Popup = () => {
       remediation: '',
       evidence: f.evidence || '',
       category: 'Recon',
+      _finding: f, // kept for the PoC scaffold (I1)
     });
     // Best-effort LLM upgrade of the rationale — never blocks, never throws, silently
     // keeps the fallback if no provider. Only patches if this draft is still open.
@@ -756,8 +781,9 @@ const Popup = () => {
   const runEscalate = async (finding) => {
     if (!finding) return;
     const depth = Number(finding.depth) || 0;
-    if (!canEscalate({ depth, budgetUsed: escBudgetUsed })) {
-      toast.info('Escalation limit reached (max depth or session budget). Close and start fresh to continue.');
+    const { maxDepth: escMaxDepth, budget: escBudget } = escalationBudgetFor(finding);
+    if (!canEscalate({ depth, budgetUsed: escBudgetUsed, maxDepth: escMaxDepth, budget: escBudget })) {
+      toast.info('Escalation limit reached for this finding (confidence-scaled depth or session budget). Close and start fresh to continue.');
       return;
     }
     // Don't spend AI budget escalating pure noise; tentative+ is fair game (that's what escalation is for).
@@ -1163,6 +1189,13 @@ const Popup = () => {
     // chrome.scripting can't touch restricted pages (chrome://, view-source,
     // the Web Store, etc.) — only http/https are injectable here.
     if (!/^https?:\/\//i.test(tab.url || '')) return false;
+
+    // Scope gate at the choke point. Content scripts are registered only for
+    // in-scope hosts, so an out-of-scope tab never has one — without this check
+    // the on-demand path would quietly reinstate the browser-wide injection we
+    // removed. Several callers rely on this instead of checking scope
+    // themselves (their buttons are UI-disabled, which is not enforcement).
+    if (!isHostAllowed(tab.url)) return false;
 
     try {
       await chrome.scripting.executeScript({
@@ -2700,12 +2733,30 @@ const Popup = () => {
                       <details className="inv-details" open>
                         <summary className="inv-sum tone-warn"><span className="inv-caret" aria-hidden="true"><IconChevron /></span><span className="inv-sum-label">Missing-auth candidates</span><span className="inv-count">{authC.length}</span></summary>
                         <div className="inv-list">
-                          {authC.map((a, i) => (
-                            <div key={i} className="inv-list-item" style={{ display: 'block' }}>
-                              <span className="tag tag-fw">{a.method}</span> <code>{a.path}</code>
-                              <div className="muted" style={{ fontSize: 10 }}>{a.reason}</div>
-                            </div>
-                          ))}
+                          {authC.map((a, i) => {
+                            const acKey = `${a.method} ${a.path}`;
+                            const an = acAnalysis[acKey];
+                            return (
+                              <div key={i} className="inv-list-item" style={{ display: 'block' }}>
+                                <span className="tag tag-fw">{a.method}</span> <code>{a.path}</code>
+                                <div className="muted" style={{ fontSize: 10 }}>{a.reason}</div>
+                                {a.pair && (
+                                  an && an.loading ? (
+                                    <span className="muted" style={{ fontSize: 10 }}>Analyzing…</span>
+                                  ) : an ? (
+                                    <div className="muted" style={{ fontSize: 10 }}>🧠 AI candidate: <strong>{an.kind}</strong> ({an.confidence}%) — {an.rationale} <em>· verify manually</em></div>
+                                  ) : (
+                                    <button className="btn-small" title="AI-draft an access-control hypothesis from the response pair (candidate only)" onClick={() => {
+                                      setAcAnalysis((m) => ({ ...m, [acKey]: { loading: true } }));
+                                      analyzeAccessControl({ a: a.pair.authed, b: a.pair.anon, variant: 'auth', context: { endpoint: a.path }, chat: ai.chat, model: routeModel('triage') })
+                                        .then((r) => setAcAnalysis((m) => ({ ...m, [acKey]: { kind: r.kind, confidence: r.confidence, rationale: r.rationale || '(no signal)', loading: false } })))
+                                        .catch(() => setAcAnalysis((m) => ({ ...m, [acKey]: { kind: 'error', confidence: 0, rationale: 'analysis failed', loading: false } })));
+                                    }}>Analyze (AI)</button>
+                                  )
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       </details>
                     )}
@@ -3277,6 +3328,14 @@ const Popup = () => {
               <h3>Findings {currentHost && !findingsCrossHost && <span className="muted">· {currentHost}</span>}</h3>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="link-btn" onClick={runProposeChains} disabled={chainsBusy || scored.length === 0} title="Ask AI to propose exploit chains across these findings (human-verified, nothing runs)">{chainsBusy ? '🔗 Proposing…' : '🔗 Propose chains'}</button>
+                <button className="link-btn" disabled={scored.length === 0} title="What's new since you last checked — ranked" onClick={() => {
+                  const seen = new Set(digestSeen);
+                  const newFindings = scored.filter((f) => !seen.has(f.id));
+                  setReconDigestResult(buildReconDigest({ newFindings }, { scope, allFindings: scored }));
+                  const ids = scored.map((f) => f.id);
+                  setDigestSeen(ids);
+                  chrome.storage.local.set({ digestSeen: ids });
+                }}>🔭 Digest</button>
                 <button className="link-btn" onClick={refreshFindings}>Refresh</button>
                 <button className="link-btn" onClick={() => clearFindingsForHost(currentHost)} disabled={!currentHost || !findings[currentHost]}>Clear host</button>
               </div>
@@ -3309,6 +3368,31 @@ const Popup = () => {
                 </div>
               ))}
             </div>
+
+            {reconDigestResult && (
+              <div className="recon-digest" style={{ margin: '8px 0', padding: 8, border: '1px solid var(--border,#333)', borderRadius: 6, fontSize: 11 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong>🔭 Recon digest</strong>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="link-btn" title="Send this digest to your configured notify webhook" onClick={() => {
+                      chrome.runtime.sendMessage({ action: 'sendDigest', title: 'Recon digest', body: formatReconDigest(reconDigestResult) }, (resp) => {
+                        if (resp && resp.success) toast.success('Digest sent to webhook');
+                        else toast.error(resp && resp.reason === 'no_webhook' ? 'Set a notify webhook in Config first.' : 'Send failed.');
+                      });
+                    }}>Send</button>
+                    <button className="link-btn" onClick={() => setReconDigestResult(null)}>×</button>
+                  </div>
+                </div>
+                <div className="muted" style={{ marginTop: 2 }}>{reconDigestResult.summary}</div>
+                {(reconDigestResult.topMoves || []).length > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    {reconDigestResult.topMoves.map((m) => (
+                      <div key={m.findingId} className="muted" style={{ marginTop: 2 }}>{m.chainLink && '⛓ '}<strong>{m.title || m.type}</strong> — {m.reason}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {(() => {
               const suggestions = detectEscalationSignals(scored, { scope }).filter((x) => !dismissedSignals.has(x.findingId));
@@ -3354,7 +3438,7 @@ const Popup = () => {
                 {sorted.map((f, i) => {
                   const depth = Number(f.depth) || 0;
                   const notNoise = canEscalateFinding(f, { minBand: 'tentative' });
-                  const canEsc = canEscalate({ depth, budgetUsed: escBudgetUsed }) && notNoise;
+                  const canEsc = canEscalate({ depth, budgetUsed: escBudgetUsed, ...escalationBudgetFor(f) }) && notNoise;
                   const band = f.validation && f.validation.band;
                   return (
                     <div key={i} className={`find-card sev-${f.severity}`}>
@@ -3456,8 +3540,11 @@ const Popup = () => {
               ) : (
                 graphChains.map((c) => (
                   <div key={c.id} className="agent-finding" style={{ fontSize: 11, marginTop: 4 }}>
-                    <span className="sev-badge">{c.severity}</span> <strong>{c.title}</strong>
+                    <span className="sev-badge">{c.severity}</span>
+                    {c.crossHost && <span className="sev-badge" style={{ background: '#7048e8' }} title={`spans ${(c.hosts || []).join(', ')}`}> ⇄ cross-host</span>}{' '}
+                    <strong>{c.title}</strong>
                     <div className="muted">{c.steps.map((s) => s.type).join(' → ')}</div>
+                    {c.crossHost && <div className="muted" style={{ fontSize: 10 }}>{(c.hosts || []).join(' · ')}</div>}
                   </div>
                 ))
               )}
@@ -4325,6 +4412,27 @@ const Popup = () => {
                   </div>
                   {c.rationale && <div className="muted" style={{ fontSize: 11, lineHeight: 1.4, marginTop: 4 }}>{c.rationale}</div>}
                   <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>AI-proposed · verify before reporting</div>
+                  {(() => {
+                    const n = chainNarratives[c.id];
+                    if (n && n.loading) return <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>Drafting impact…</div>;
+                    if (n) return (
+                      <div style={{ fontSize: 11, marginTop: 6, borderTop: '1px solid var(--border,#333)', paddingTop: 4 }}>
+                        {n.summary && <div><strong>Summary.</strong> {n.summary}</div>}
+                        {n.impact && <div style={{ marginTop: 2 }}><strong>Impact.</strong> {n.impact}</div>}
+                        {n.remediation && <div style={{ marginTop: 2 }}><strong>Fix.</strong> {n.remediation}</div>}
+                        {n.cvss && <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>{n.cvss} · AI-drafted label · severity {n.severity} (tool-set)</div>}
+                        {n.source === 'error' && <div className="muted" style={{ fontSize: 10 }}>Draft unavailable.</div>}
+                      </div>
+                    );
+                    return (
+                      <button className="btn-small" style={{ marginTop: 4 }} title="AI-draft the report impact prose (severity stays tool-set)" onClick={() => {
+                        setChainNarratives((m) => ({ ...m, [c.id]: { loading: true } }));
+                        draftChainNarrative(c, { chat: ai.chat, model: routeModel('report') })
+                          .then((r) => setChainNarratives((m) => ({ ...m, [c.id]: r })))
+                          .catch(() => setChainNarratives((m) => ({ ...m, [c.id]: { source: 'error', severity: c.severity } })));
+                      }}>Draft impact (AI)</button>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
@@ -4350,7 +4458,7 @@ const Popup = () => {
               active steps still honor dry-run &amp; confirmation.
             </p>
             <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
-              depth {escalation.depth || 0} · action budget {remainingBudget(escBudgetUsed)}/{DEFAULT_ESCALATION_BUDGET} left this session
+              depth {escalation.depth || 0}/{escalationBudgetFor(escalation.finding).maxDepth} <span className="muted">(confidence-scaled)</span> · action budget {remainingBudget(escBudgetUsed)}/{DEFAULT_ESCALATION_BUDGET} left this session
             </div>
             {(escalation.chainGoals || []).length > 0 && (
               <div className="escalation-goals" style={{ fontSize: 11, marginBottom: 8, padding: 6, border: '1px solid var(--border, #333)', borderRadius: 4 }}>
@@ -4484,7 +4592,13 @@ const Popup = () => {
                   <label>Target<input value={reportDraft.target} onChange={(e) => upd('target', e.target.value)} /></label>
                   <label>Program<input value={reportDraft.program} onChange={(e) => upd('program', e.target.value)} placeholder="e.g. Example (H1)" /></label>
                   <label>Summary<textarea rows={2} value={reportDraft.summary} onChange={(e) => upd('summary', e.target.value)} /></label>
-                  <label>Steps (one per line)<textarea rows={3} value={reportDraft.steps} onChange={(e) => upd('steps', e.target.value)} /></label>
+                  <label>Steps (one per line)
+                    <button type="button" className="btn-small" style={{ marginLeft: 6 }} title="Auto-fill reproduction steps + a minimal PoC from the finding" onClick={() => {
+                      const sc = buildPocScaffold(reportDraft._finding || { host: reportDraft.target, title: reportDraft.title, evidence: reportDraft.evidence });
+                      setReportDraft((prev) => ({ ...prev, steps: formatPocSteps(sc), evidence: prev.evidence || sc.evidence }));
+                    }}>Auto-fill PoC</button>
+                    <textarea rows={4} value={reportDraft.steps} onChange={(e) => upd('steps', e.target.value)} />
+                  </label>
                   <label>Impact<textarea rows={2} value={reportDraft.impact} onChange={(e) => upd('impact', e.target.value)} /></label>
                   <label>Evidence (request/response)<textarea rows={3} value={reportDraft.evidence} onChange={(e) => upd('evidence', e.target.value)} spellCheck={false} /></label>
                 </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { buildGraph, nodesOfType, findNode, outEdges, addPlaybookEdges, buildAttackGraph, proposeGraphChains } from '../src/utils/graph';
+import { buildGraph, nodesOfType, findNode, outEdges, addPlaybookEdges, buildAttackGraph, proposeGraphChains, annotateChainHosts } from '../src/utils/graph';
 
 const scope = { inScope: ['*.example.com', 'example.com'], outOfScope: [] };
 
@@ -128,5 +128,29 @@ describe('proposeGraphChains (A3)', () => {
     const g = buildGraph({ findings: [gi], scope: s });
     expect(proposeGraphChains(g, { findings: [gi], scope: s }).chains).toEqual([]);
     expect(() => proposeGraphChains(null, {})).not.toThrow();
+  });
+});
+
+describe('annotateChainHosts / cross-host surfacing (E1)', () => {
+  const s = { inScope: ['*.example.com'], outOfScope: [] };
+  const giA = { id: 'gi', host: 'a.example.com', type: 'graphql-introspection', severity: 'medium', confidence: 60, title: 'i' };
+  const gsB = { id: 'gs', host: 'b.example.com', type: 'graphql-surface', severity: 'low', confidence: 50, title: 's' };
+
+  it('flags a graph chain whose findings span hosts as cross-host', () => {
+    const g = buildAttackGraph({ findings: [giA, gsB], scope: s });
+    const r = proposeGraphChains(g, { findings: [giA, gsB], scope: s });
+    expect(r.chains[0].crossHost).toBe(true);
+    expect(r.chains[0].hosts.slice().sort()).toEqual(['a.example.com', 'b.example.com']);
+  });
+
+  it('marks a single-host chain as not cross-host', () => {
+    const out = annotateChainHosts([{ findingIds: ['x'] }], [{ id: 'x', host: 'app.example.com' }]);
+    expect(out[0].crossHost).toBe(false);
+    expect(out[0].hosts).toEqual(['app.example.com']);
+  });
+
+  it('never throws on garbage', () => {
+    expect(() => annotateChainHosts(null, null)).not.toThrow();
+    expect(annotateChainHosts(null, null)).toEqual([]);
   });
 });

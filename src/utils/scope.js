@@ -106,6 +106,41 @@ export function isInScope(url, scope = EMPTY_SCOPE) {
 }
 
 /**
+ * Translate a scope's in-scope host patterns into Chrome match patterns for
+ * `chrome.scripting.registerContentScripts` / `webRequest` filters.
+ *
+ * This is what keeps the extension off every tab: content scripts are no longer
+ * declared statically for `<all_urls>` in the manifest, they are registered at
+ * runtime ONLY for these patterns. An empty in-scope list yields `[]`, which the
+ * caller must treat as "register nothing" — the extension stays inert until the
+ * operator names a target.
+ *
+ *   '*'              → ['http://*\/*', 'https://*\/*']  (explicit wildcard only)
+ *   '*.example.com'  → ['*://*.example.com/*']  (Chrome's *. also covers the apex)
+ *   'example.com'    → ['*://example.com/*']
+ *
+ * `outOfScope` cannot be expressed as a match pattern (there is no negative
+ * form), so carve-outs stay enforced at message time by `evaluateScope`.
+ */
+export function toMatchPatterns(scope) {
+  const inScope = (scope && scope.inScope) || [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of inScope) {
+    const p = normalizePattern(raw);
+    if (!p) continue;
+    const patterns = p === '*' ? ['http://*/*', 'https://*/*'] : [`*://${p}/*`];
+    for (const m of patterns) {
+      if (!seen.has(m)) {
+        seen.add(m);
+        out.push(m);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Migration: derive a scope from the legacy flat `allowlist`. '*' stays '*';
  * other entries become `*.entry` to preserve the old substring-ish matching.
  */
@@ -119,5 +154,7 @@ export function scopeFromAllowlist(allowlist) {
       inScope.push(p);
     }
   }
-  return { inScope: inScope.length ? inScope : ['*'], outOfScope: [] };
+  // Fail CLOSED: an absent/empty allowlist yields an empty scope, not '*'.
+  // `evaluateScope` then returns 'no_scope' and nothing attaches or acts.
+  return { inScope, outOfScope: [] };
 }

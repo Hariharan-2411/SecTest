@@ -180,6 +180,30 @@ function findChainPaths(graph, { maxLen = MAX_STEPS, maxPaths = 20 } = {}) {
 }
 
 /**
+ * E1 — annotate each chain with the hosts its findings span + a cross-host flag,
+ * so program-wide (cross-subdomain) attack paths are visible. Pure; never throws.
+ */
+export function annotateChainHosts(chains, findings) {
+  const byId = new Map();
+  for (const f of Array.isArray(findings) ? findings : []) {
+    if (f && f.id != null) byId.set(String(f.id), f);
+  }
+  return (Array.isArray(chains) ? chains : []).map((c) => {
+    const hosts = [
+      ...new Set(
+        (c && Array.isArray(c.findingIds) ? c.findingIds : [])
+          .map((id) => {
+            const f = byId.get(String(id));
+            return f && f.host;
+          })
+          .filter(Boolean)
+      ),
+    ];
+    return { ...c, hosts, crossHost: hosts.length > 1 };
+  });
+}
+
+/**
  * A3 — propose exploit chains as path-finding over the graph's `leads-to` edges,
  * then VALIDATE each path through the same chains.normalizeChains gate as the LLM
  * path (grounded in real findings, scope re-checked, ≥2 steps). Cross-host chains
@@ -193,5 +217,5 @@ export function proposeGraphChains(graph, { findings, scope, maxPaths = 20 } = {
     rationale: 'derived from the attack graph',
   }));
   const { chains, rejected } = normalizeChains(rawChains, { findings, scope });
-  return { chains, rejected, source: 'graph' };
+  return { chains: annotateChainHosts(chains, findings), rejected, source: 'graph' };
 }
