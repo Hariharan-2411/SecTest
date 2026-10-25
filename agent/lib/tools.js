@@ -111,6 +111,9 @@ const TOOLS = {
     build: (host, url, profile) => [
       '-silent',
       '-jsonl',
+      '-jc',          // crawl endpoints referenced inside JS bundles — SPAs keep
+                      // their API routes (/rest, /api) there, not in static HTML
+      '-kf', 'all',   // known files: robots.txt, sitemap.xml
       '-d', CRAWL_DEPTH[profile] || CRAWL_DEPTH.quick,
       '-c', '10',
       '-timeout', '10',

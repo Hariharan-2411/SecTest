@@ -19,6 +19,7 @@ import {
 import { executeReconTool } from './reconExecutor';
 import { finalizeTriage } from './reconTriage';
 import { fingerprintStack, formatFingerprint } from './fingerprint';
+import { extractEndpoints } from './endpointHarvest';
 import * as ai from './aiProvider';
 
 export const MAX_RECON_DEPTH = 6;
@@ -232,7 +233,7 @@ export async function planReconStep(context, { chat, model } = {}) {
   }
 }
 
-function mergeResult(context, result) {
+function mergeResult(context, result, base) {
   if (!result || !result.ok) return;
   for (const f of result.findings || []) context.findings.push(f);
   const bucket = SURFACE_BUCKET[result.kind];
@@ -247,6 +248,20 @@ function mergeResult(context, result) {
       if (!seen.has(key)) {
         seen.add(key);
         context.surface[bucket].push(it);
+      }
+    }
+  }
+  // SPA/API discovery: mine the tool's raw output for in-scope endpoints the
+  // parser didn't surface (API routes live as strings in JS bundles) and fold
+  // them into the URL surface so the planner has real targets to test.
+  if (base && typeof result.raw === 'string' && result.raw) {
+    const have = new Set(
+      context.surface.urls.map((x) => (typeof x === 'string' ? x : JSON.stringify(x)))
+    );
+    for (const ep of extractEndpoints(result.raw, base, context.scope)) {
+      if (!have.has(ep)) {
+        have.add(ep);
+        context.surface.urls.push(ep);
       }
     }
   }
@@ -347,7 +362,7 @@ export async function runReconLoop({
         const result = await executeReconTool(d.call, { agentClient });
         context.budgetUsed++;
         ranAny = true;
-        mergeResult(context, result);
+        mergeResult(context, result, d.call.target);
         context.executed.push({
           decision: d.decision,
           call: d.call,
@@ -389,7 +404,7 @@ export async function runReconLoop({
         executedKeys.add(key);
         const result = await executeReconTool(nd.call, { agentClient });
         injected++;
-        mergeResult(context, result);
+        mergeResult(context, result, nd.call.target);
         context.executed.push({ decision: nd.decision, call: nd.call, ran: true, ok: result.ok, error: result.error, found: (result.findings || []).length, command: result.command || '', rawExcerpt: result.raw || '', evidence: result.evidence || null, pass: 'injection' });
       }
     }
