@@ -88,6 +88,22 @@ describe('buildReconPrompt — grounded, JSON-only', () => {
     expect(c).toMatch(/sqlmap/);
     expect(c).toMatch(/timed out/i);
   });
+
+  it('surfaces fingerprinted tech → tool suggestions (e.g. WordPress → wpscan)', () => {
+    const ctx = baseCtx();
+    ctx.surface.urls = ['https://blog.example.com/wp-login.php'];
+    const c = buildReconPrompt(ctx).messages[0].content;
+    expect(c).toMatch(/wordpress/i);
+    expect(c).toContain('wpscan');
+  });
+
+  it('surfaces cross-run memory: tools that paid off on this target before', () => {
+    const ctx = baseCtx();
+    ctx.memory = { paidOff: [{ tool: 'sqlmap', count: 3 }, { tool: 'nuclei', count: 1 }], knownAssets: [] };
+    const c = buildReconPrompt(ctx).messages[0].content;
+    expect(c).toMatch(/earlier runs/i);
+    expect(c).toContain('sqlmap');
+  });
 });
 
 describe('planReconStep — parse the LLM plan (DI chat)', () => {

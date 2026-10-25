@@ -18,6 +18,7 @@ import {
 } from './reconAgent';
 import { executeReconTool } from './reconExecutor';
 import { finalizeTriage } from './reconTriage';
+import { fingerprintStack, formatFingerprint } from './fingerprint';
 import * as ai from './aiProvider';
 
 export const MAX_RECON_DEPTH = 6;
@@ -177,6 +178,13 @@ export function buildReconPrompt(context = {}) {
     (toolErrors.length
       ? `Recent tool failures (do NOT blindly re-run these on the same target): ${toolErrors.join('; ')}. `
       : '') +
+    formatFingerprint(fingerprintStack(context)) +
+    (context.memory && Array.isArray(context.memory.paidOff) && context.memory.paidOff.length
+      ? `Earlier runs on this target: these tools previously found bugs here — prioritize them: ${context.memory.paidOff
+          .slice(0, 8)
+          .map((p) => `${p.tool}${p.count ? ` (x${p.count})` : ''}`)
+          .join(', ')}. `
+      : '') +
     'REACT TO THE EVIDENCE ABOVE: let the specific findings drive the next steps — e.g. a login/auth endpoint → auth/JWT tests; a parametered URL → injection tools; a detected CMS/tech → its dedicated tool; a tool that failed → try a different tool or target, not the same one again. ' +
     'STRATEGY: discovery is only the first step — do NOT spend the whole budget enumerating. ' +
     'As soon as you have endpoints (the Known endpoints above, or once katana/gau/httpx have run), ' +
@@ -261,6 +269,7 @@ export async function runReconLoop({
   maxDepth = MAX_RECON_DEPTH,
   seeds = [],
   critique,
+  memory = null,
 } = {}) {
   const seedUrls = (Array.isArray(seeds) ? seeds : []).filter(
     (u) => typeof u === 'string' && u.trim()
@@ -274,6 +283,9 @@ export async function runReconLoop({
     // directly — in-scope hosts alone can't carry a non-standard port/scheme.
     surface: { subdomains: [], urls: [...seedUrls], hosts: [], ports: [] },
     findings: [],
+    // Cross-run memory: what earlier runs on this target discovered + which tools
+    // paid off. The planner uses it to start warm, not cold. null → first run.
+    memory: memory && typeof memory === 'object' ? memory : null,
   };
   const executedKeys = new Set();
   const approveFn = typeof approve === 'function' ? approve : async () => false;
