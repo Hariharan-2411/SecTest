@@ -30,17 +30,26 @@ RUN go install github.com/tomnomnom/assetfinder@latest || true; \
     go install github.com/zricethezav/gitleaks/v8@latest || true
 
 # ---- stage 2: runtime -------------------------------------------------------
-FROM node:20-bookworm-slim
+# Node 22 LTS on Debian 13 "trixie" (digest-pinned): trixie carries far fewer CVEs
+# than the old bookworm base (whose perl/tar were the criticals). Re-pull + bump
+# the digest to take new patches.
+FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf
 
-# nmap + libpcap (naabu) + CA certs (TLS) + curl/tar/unzip. feroxbuster's arm64
-# release asset is a .zip, so unzip is required for the installer to extract it.
-RUN apt-get update && \
+# Patch OS packages, then install tooling. nmap + libpcap (naabu) + CA certs (TLS)
+# + curl/tar/unzip + setcap (libcap2-bin, to grant naabu raw sockets as non-root).
+# feroxbuster's arm64 release asset is a .zip, so unzip is required. libpcap got a
+# `t64` rename in trixie — try the new name, fall back to the old.
+RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
-      nmap libpcap0.8 ca-certificates curl tar unzip sqlmap \
+      nmap ca-certificates curl tar unzip sqlmap libcap2-bin \
       git make gcc python3 python3-venv pipx ruby ruby-dev build-essential chromium && \
+    (apt-get install -y --no-install-recommends libpcap0.8t64 || apt-get install -y --no-install-recommends libpcap0.8) && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=tools /out/ /usr/local/bin/
+# naabu does SYN scans → raw sockets. Grant the capability to the binary so it
+# works under the non-root runtime user (Docker's default cap set includes NET_RAW).
+RUN setcap cap_net_raw,cap_net_bind_service+eip /usr/local/bin/naabu 2>/dev/null || true
 
 # --- Phase 1: Python tools via pipx (isolated); non-fatal each ---------------
 ENV PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin PATH=/usr/local/bin:$PATH
@@ -95,12 +104,24 @@ RUN nuclei -update-templates >/dev/null 2>&1 || true
 WORKDIR /app
 COPY . .
 
+# Relocate root-built state into the non-root user's home so the runtime finds it:
+# the mitmproxy CA (already trusted system-wide, so interception keeps working) and
+# nuclei's pre-fetched templates/config. Then hand node /app (incl. the data dir).
+RUN mkdir -p /home/node /app/data && \
+    (cp -r /root/.mitmproxy /home/node/.mitmproxy 2>/dev/null || true) && \
+    (cp -r /root/nuclei-templates /home/node/nuclei-templates 2>/dev/null || true) && \
+    (cp -r /root/.config /home/node/.config 2>/dev/null || true) && \
+    chown -R node:node /home/node /app
+
 # In-container the process must bind 0.0.0.0 to be reachable via the published
 # port; the compose file restricts host exposure to 127.0.0.1.
 ENV AGENT_BIND=0.0.0.0 AGENT_PORT=8787 \
     AGENT_MITM_ADDON=/app/mitm/capture.py \
+    HOME=/home/node \
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 EXPOSE 8787
 
+# Run unprivileged (naabu keeps raw-socket access via its file capability above).
+USER node
 CMD ["node", "server.js"]
