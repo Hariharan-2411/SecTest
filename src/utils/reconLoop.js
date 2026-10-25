@@ -139,10 +139,26 @@ export function buildReconPrompt(context = {}) {
     0,
     (context.budget || DEFAULT_RECON_BUDGET) - (context.budgetUsed || 0)
   );
-  const done = (Array.isArray(context.executed) ? context.executed : [])
+  const executed = Array.isArray(context.executed) ? context.executed : [];
+  const done = executed
     .filter((e) => e && e.ran)
     .map((e) => `${e.call && e.call.tool}:${e.call && e.call.target}`)
     .slice(0, 30);
+  // SIGHT: let the planner see WHAT it found and WHAT failed, not just counts, so
+  // it can react to evidence (a login form → auth tests; a parametered URL →
+  // injection) and stop blindly retrying tools that errored/timed out.
+  const findingDigest = (Array.isArray(context.findings) ? context.findings : [])
+    .slice(-10)
+    .map((f) => {
+      const what = f.type || f.name || f.title || 'finding';
+      const where = f.host || f.target || '';
+      const conf = f.confidence != null ? `(${f.confidence})` : '';
+      return `${what}@${where}${conf}`;
+    });
+  const toolErrors = executed
+    .filter((e) => e && e.ran && (e.error || e.ok === false))
+    .slice(-6)
+    .map((e) => `${e.call && e.call.tool}:${e.call && e.call.target} → ${String(e.error || 'failed').replace(/\s+/g, ' ').slice(0, 80)}`);
   const content =
     'You are a bug-bounty recon planner. Goal: enumerate in-scope assets and surface known vulnerabilities using ONLY the allowed tools, staying strictly in scope. ' +
     `Allowed tools: ${Object.keys(RECON_TOOLS).join(
@@ -157,6 +173,11 @@ export function buildReconPrompt(context = {}) {
       (context.findings || []).length
     } findings. ` +
     `Budget remaining: ${remaining} tool runs. ` +
+    `Findings so far: ${findingDigest.join('; ') || '(none yet)'}. ` +
+    (toolErrors.length
+      ? `Recent tool failures (do NOT blindly re-run these on the same target): ${toolErrors.join('; ')}. `
+      : '') +
+    'REACT TO THE EVIDENCE ABOVE: let the specific findings drive the next steps — e.g. a login/auth endpoint → auth/JWT tests; a parametered URL → injection tools; a detected CMS/tech → its dedicated tool; a tool that failed → try a different tool or target, not the same one again. ' +
     'STRATEGY: discovery is only the first step — do NOT spend the whole budget enumerating. ' +
     'As soon as you have endpoints (the Known endpoints above, or once katana/gau/httpx have run), ' +
     'spend most of the remaining budget TESTING those exact endpoint URLs for vulnerabilities with the ' +
@@ -177,8 +198,22 @@ export async function planReconStep(context, { chat, model } = {}) {
   const call = chat || ai.chat;
   try {
     const { messages } = buildReconPrompt(context);
-    const reply = await call(messages, model);
-    const parsed = safeParse(reply);
+    let reply = await call(messages, model);
+    let parsed = safeParse(reply);
+    if (!parsed) {
+      // ONE repair re-ask: a single malformed reply must not silently end the
+      // engagement. Re-ask for strict JSON; only then give up.
+      const repair = messages.concat([
+        {
+          role: 'user',
+          content:
+            'Your previous reply was not valid JSON. Reply with ONLY the JSON object ' +
+            '{"steps":[{"tool","target","profile"}],"done":false} — no prose, no explanation, no code fence.',
+        },
+      ]);
+      reply = await call(repair, model);
+      parsed = safeParse(reply);
+    }
     if (!parsed) return { steps: [], done: true };
     return {
       steps: Array.isArray(parsed.steps) ? parsed.steps : [],

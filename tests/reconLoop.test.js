@@ -69,6 +69,25 @@ describe('buildReconPrompt — grounded, JSON-only', () => {
     expect(c).toContain('subfinder'); // a tool name
     expect(c).toMatch(/json/i);
   });
+
+  it('gives the planner SIGHT: the actual findings (type/host/confidence) and recent tool errors', () => {
+    const ctx = baseCtx();
+    ctx.findings = [
+      { type: 'login-form', host: 'app.example.com', confidence: 80 },
+      { type: 'open-redirect', host: 'api.example.com', confidence: 55 },
+    ];
+    ctx.executed = [
+      { ran: true, ok: false, call: { tool: 'sqlmap', target: 'app.example.com/s?q=1' }, error: 'connection timed out' },
+    ];
+    const c = buildReconPrompt(ctx).messages[0].content;
+    // sees WHAT it found, not just a count
+    expect(c).toContain('login-form');
+    expect(c).toContain('app.example.com');
+    expect(c).toMatch(/80/);
+    // sees what FAILED, so it can stop blindly retrying
+    expect(c).toMatch(/sqlmap/);
+    expect(c).toMatch(/timed out/i);
+  });
 });
 
 describe('planReconStep — parse the LLM plan (DI chat)', () => {
@@ -79,6 +98,19 @@ describe('planReconStep — parse the LLM plan (DI chat)', () => {
         done: false,
       });
     const p = await planReconStep(baseCtx(), { chat });
+    expect(p.steps).toHaveLength(1);
+    expect(p.done).toBe(false);
+  });
+
+  it('recovers from a single malformed reply via one repair re-ask', async () => {
+    let i = 0;
+    const chat = jest.fn(async () =>
+      i++ === 0
+        ? 'oops, here is my plan (not json)'
+        : JSON.stringify({ steps: [{ tool: 'httpx', target: 'app.example.com' }], done: false })
+    );
+    const p = await planReconStep(baseCtx(), { chat });
+    expect(chat).toHaveBeenCalledTimes(2); // asked again after the bad reply
     expect(p.steps).toHaveLength(1);
     expect(p.done).toBe(false);
   });
