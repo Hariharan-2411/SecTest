@@ -315,7 +315,26 @@ function targetEndpoint(input) {
   return `https://${host}${portMatch ? ':' + portMatch[1] : ''}`;
 }
 
-function buildCommand(tool, target, profile = 'quick') {
+// Apply a per-engagement requests/sec cap to the tools that support it, so a
+// program's "limit requests per second" rule can be honored. Tools with a native
+// req/s flag get it set; the injection tools get an inter-request --delay instead.
+// rate <= 0 (or unset) → leave the tool's bounded defaults untouched.
+const RATE_FLAG = { nuclei: '-rate-limit', ffuf: '-rate', httpx: '-rl', katana: '-rl' };
+function applyRate(args, tool, rate) {
+  const r = Number(rate);
+  if (!(r > 0)) return args;
+  const flag = RATE_FLAG[tool];
+  if (flag) {
+    const i = args.indexOf(flag);
+    if (i >= 0 && i + 1 < args.length) { args[i + 1] = String(r); return args; }
+    return args.concat([flag, String(r)]);
+  }
+  if (tool === 'sqlmap') return args.concat(['--delay', (1 / r).toFixed(2)]);        // seconds between requests
+  if (tool === 'dalfox') return args.concat(['--delay', String(Math.max(1, Math.round(1000 / r)))]); // ms between requests
+  return args;
+}
+
+function buildCommand(tool, target, profile = 'quick', opts = {}) {
   const def = TOOLS[tool];
   if (!def) throw new Error(`unknown_tool:${tool}`);
   if (def.mode === 'content') throw new Error('content_tool'); // runs via fetch-then-scan, not here
@@ -324,7 +343,8 @@ function buildCommand(tool, target, profile = 'quick') {
   const url = targetEndpoint(target);
   // Domain-based tools (subfinder/dnsx) and port scanners (naabu/nmap) ignore the
   // URL and use `host`; URL-based tools use the normalized endpoint.
-  return { bin: def.bin, args: def.build(host, url, profile), risk: def.risk, host };
+  const args = applyRate(def.build(host, url, profile), tool, opts.rate);
+  return { bin: def.bin, args, risk: def.risk, host };
 }
 
 /**

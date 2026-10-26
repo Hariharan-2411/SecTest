@@ -340,7 +340,7 @@ async function handle(req, res) {
 
     let cmd;
     try {
-      cmd = buildCommand(body.tool, body.target, body.profile);
+      cmd = buildCommand(body.tool, body.target, body.profile, { rate: Number(body.rate) || 0 });
     } catch (e) {
       return send(res, 400, { error: String(e.message || e) });
     }

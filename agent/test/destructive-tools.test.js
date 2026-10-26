@@ -49,6 +49,17 @@ test('URL tools receive the normalized endpoint (http + non-standard port)', () 
   assert.ok(fx.includes('http://localhost:3000/FUZZ'));
 });
 
+test('buildCommand applies a per-engagement req/s rate to rate-capable tools', () => {
+  // native req/s flags: override (nuclei/ffuf) or append (httpx/katana)
+  assert.match(buildCommand('nuclei', 'https://h/', 'quick', { rate: 5 }).args.join(' '), /-rate-limit 5\b/);
+  assert.match(buildCommand('httpx', 'https://h/', 'quick', { rate: 3 }).args.join(' '), /-rl 3\b/);
+  assert.match(buildCommand('ffuf', 'https://h/', 'quick', { rate: 7 }).args.join(' '), /-rate 7\b/);
+  // injection tools get an inter-request delay instead
+  assert.match(buildCommand('sqlmap', 'https://h/?id=1', 'quick', { rate: 5 }).args.join(' '), /--delay 0\.20/);
+  // no rate → bounded defaults untouched
+  assert.match(buildCommand('nuclei', 'https://h/', 'quick').args.join(' '), /-rate-limit 50\b/);
+});
+
 test('parseOutput(dalfox) → findings from JSON PoCs', () => {
   const out = JSON.stringify([{ type: 'reflected', data: 'https://app.example.com/?q=<svg/onload>' }]);
   const r = parseOutput('dalfox', out);
